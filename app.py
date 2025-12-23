@@ -33,7 +33,6 @@ def get_service_account_credentials():
         "client_email": CLIENT_EMAIL,
         "client_id": os.getenv("GCP_SA_CLIENT_ID"),
         "auth_uri": os.getenv("GCP_SA_AUTH_URI"),
-        # LINHA CORRIGIDA AQUI: Buscando a variável correta
         "token_uri": os.getenv("GCP_SA_TOKEN_URI"), 
         "auth_provider_x509_cert_url": os.getenv("GCP_SA_AUTH_PROVIDER_X509_CERT_URL"),
         "client_x509_cert_url": os.getenv("GCP_SA_CLIENT_X509_CERT_URL"),
@@ -216,8 +215,9 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
                 
                 df_base['Custo Total (R$)'] = df_base['CUSTO_ITEM'].round(4)
                 df_base['Custo/Unidade Mestre (R$)'] = df_base['CUSTO_UNITARIO'].round(4)
-
-                df_base_display = df_base[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Custo/Unidade Mestre (R$)', 'Custo Total na Base (R$)']]
+                
+                # CORREÇÃO AQUI (no bloco do Bolo Final/Bases)
+                df_base_display = df_base[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Custo/Unidade Mestre (R$)', 'Custo Total (R$)']]
                 df_base_display.columns = ['Ingrediente Mestre', 'Qtd na Receita (G/ML/UN)', 'Custo/Unidade (R$)', 'Custo Total na Base (R$)']
                 
                 st.dataframe(df_base_display, hide_index=True, use_container_width=True)
@@ -239,7 +239,8 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
         df_base['Custo Total (R$)'] = df_base['CUSTO_ITEM'].round(4)
         df_base['Custo/Unidade Mestre (R$)'] = df_base['CUSTO_UNITARIO'].round(4)
 
-        df_base_display = df_base[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Custo/Unidade Mestre (R$)', 'Custo Total na Base (R$)']]
+        # CORREÇÃO AQUI (no bloco do Bolo Comum)
+        df_base_display = df_base[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Custo/Unidade Mestre (R$)', 'Custo Total (R$)']]
         df_base_display.columns = ['Ingrediente Mestre', 'Qtd na Receita (G/ML/UN)', 'Custo/Unidade (R$)', 'Custo Total na Base (R$)']
         
         st.dataframe(df_base_display, hide_index=True, use_container_width=True)
@@ -258,7 +259,6 @@ def main():
             all_products = df_precificacao_completa['Produto'].tolist()
             
         except Exception as e:
-            # Captura erros de autenticação ou leitura de dados
             st.error(f"Não foi possível carregar ou calcular os dados. Erro: {e}")
             return
             
@@ -268,7 +268,6 @@ def main():
     # --- 2. Interface de Consulta ---
     st.header("Consulta de Receitas e Custos")
     
-    # Dropdown para consulta manual, incluindo Bases e Finais
     selected_product = st.selectbox(
         "Selecione o Produto (Bolo Comum ou Especial) para Análise Detalhada:",
         options=["Selecione um Produto..."] + sorted(all_products)
