@@ -123,19 +123,28 @@ def get_all_calculated_data():
     df_bases = load_data_from_gsheets('receitas_bases')
     df_finais = load_data_from_gsheets('receitas_finais')
     
-    # 2. Carregar a Tabela de Preços de Mercado (FIXADO CONTRA ERRO DE COLUNA)
+    # 2. Carregar a Tabela de Preços de Mercado (NOVA LÓGICA DE 2 COLUNAS)
     df_precos_mercado_bruto = load_data_from_gsheets('tabela_precos_mercado')
     
-    # GARANTIA DE QUE AS COLUNAS 1 E 3 SERÃO USADAS (Coluna 0 e Coluna 2 no índice):
-    if len(df_precos_mercado_bruto.columns) < 3:
-        st.error("A tabela 'tabela_precos_mercado' deve ter pelo menos 3 colunas, sendo a 1ª o Produto e a 3ª o Preço de Venda.")
+    COL_PRODUTO_KEY = 'PRODUTO'
+    
+    if COL_PRODUTO_KEY not in df_precos_mercado_bruto.columns:
+        st.error(f"Coluna principal '{COL_PRODUTO_KEY}' não encontrada na aba 'tabela_precos_mercado'. Nomes das colunas carregadas: {df_precos_mercado_bruto.columns.tolist()}. Verifique se a 1ª coluna se chama 'PRODUTO' e não tem caracteres ocultos.")
         st.stop()
         
-    # Força os nomes das colunas de interesse. A 1ª coluna será 'PRODUTO_KEY' e a 3ª 'PRECO_VENDA_FINAL'
-    df_precos_mercado_bruto.columns = ['PRODUTO_KEY', 'IGNORAR_1', 'PRECO_VENDA_FINAL'] + list(df_precos_mercado_bruto.columns)[3:]
+    # Assume que a segunda coluna é o preço de venda
+    colunas_disponiveis = df_precos_mercado_bruto.columns.tolist()
+    if len(colunas_disponiveis) < 2:
+        st.error("A aba 'tabela_precos_mercado' deve ter pelo menos duas colunas (PRODUTO e PREÇO DE VENDA).")
+        st.stop()
+        
+    COL_PRECO_KEY = colunas_disponiveis[1]
+
+    # Cria o DF de preço usando a 1ª e 2ª coluna.
+    df_precos_mercado = df_precos_mercado_bruto[[COL_PRODUTO_KEY, COL_PRECO_KEY]].copy()
     
-    df_precos_mercado = df_precos_mercado_bruto[['PRODUTO_KEY', 'PRECO_VENDA_FINAL']].copy()
-    df_precos_mercado.rename(columns={'PRODUTO_KEY': 'PRODUTO'}, inplace=True)
+    # Renomeia para o nome padronizado para o merge
+    df_precos_mercado.rename(columns={COL_PRECO_KEY: 'PRECO_VENDA_FINAL', COL_PRODUTO_KEY: 'PRODUTO'}, inplace=True)
     df_precos_mercado = sanitize_and_convert(df_precos_mercado, 'PRECO_VENDA_FINAL')
     
     # 3. Calcular Custos (Lógica Antiga)
@@ -162,12 +171,16 @@ def get_all_calculated_data():
     df_bases_precificacao['Tipo'] = 'Bolo Comum (Base)'
 
     df_precificacao_completa = pd.concat([df_receitas_finais, df_bases_precificacao], ignore_index=True)
+    
+    # FIX CRÍTICO DE CASE SENSITIVITY: Renomear a coluna 'Produto' (P maiúsculo) para 'PRODUTO' (tudo maiúsculo) para o merge funcionar
+    df_precificacao_completa.rename(columns={'Produto': 'PRODUTO'}, inplace=True) 
+    
     df_precificacao_completa['Custo Total de Insumos (R$)'] = df_precificacao_completa['Custo Total de Insumos (R$)'].round(2)
     
     # 5. Merge com os preços de venda fixos
     df_precificacao_completa = pd.merge(
         df_precificacao_completa, 
-        df_precos_mercado, 
+        df_precos_mercado[['PRODUTO', 'PRECO_VENDA_FINAL']], 
         on='PRODUTO', 
         how='left'
     )
@@ -208,7 +221,7 @@ def get_all_calculated_data():
 def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_detalhe, custo_total_dict, df_bases_detalhe, unidade_ingredientes_dict, rendimento_bases):
     """Mostra o detalhe completo da receita e custo do produto final ou da base."""
     
-    product_info = df_precificacao_completa[df_precificacao_completa['Produto'] == selected_product].iloc[0]
+    product_info = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
     product_type = product_info['Tipo']
     
     st.subheader(f"Composição e Custo de Insumos: {selected_product}")
@@ -291,18 +304,18 @@ def main():
     with st.spinner('Ligando a IA da Precificação e buscando os dados no Sheets...'):
         try:
             df_precificacao_completa, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict, rendimento_bases = get_all_calculated_data()
-            all_products = df_precificacao_completa['Produto'].tolist()
+            all_products = df_precificacao_completa['PRODUTO'].tolist() # Usa 'PRODUTO' (Tudo maiúsculo)
             
         except Exception as e:
             st.error(f"Não foi possível carregar ou calcular os dados. Verifique o checklist abaixo. Erro: {e}")
             
             # Checklist para ajudar a debuggar o Google Sheets
             st.markdown("---")
-            st.subheader("Checklist de Conexão com o Google Sheets")
+            st.subheader("Checklist de Conexão com o Google Sheets (Revisado)")
             st.error("""
-            1. **Aba `tabela_precos_mercado` Existe?** O nome está EXATAMENTE assim, sem espaços extras?
-            2. **Coluna 1 (Produto):** Contém os nomes dos bolos/bases (ex: BOLO_VULCAO_CHOCOLATUDO)?
-            3. **Coluna 3 (Preço):** Contém os preços de venda (ex: 40.00)? (A 2ª coluna é ignorada.)
+            1. **Aba `tabela_precos_mercado` Existe?** O nome está EXATAMENTE assim?
+            2. **Coluna 1 (Produto):** O nome da coluna no Sheets está EXATAMENTE como 'PRODUTO' ou 'Produto'? (Seu conteúdo deve bater com o das outras abas de receita)
+            3. **Coluna 2 (Preço):** O preço de venda está na SEGUNDA coluna? O código agora ASSUME que a segunda coluna é o preço.
             4. **Permissão:** O e-mail da Service Account (GCP_SA_CLIENT_EMAIL) tem permissão de LEITURA na planilha?
             """)
             
@@ -325,7 +338,7 @@ def main():
         st.subheader("Visão Geral de Margem de Lucro Bruta e Multiplicador")
         
         # Tabela resumo com todas as métricas
-        df_display_summary = df_precificacao_completa[['Produto', 'Tipo', 'Custo Total de Insumos (R$)', 'Preço de Venda (Mercado) (R$)', 'Multiplicador Implícito', 'Margem de Lucro Bruta (%)']]
+        df_display_summary = df_precificacao_completa[['PRODUTO', 'Tipo', 'Custo Total de Insumos (R$)', 'Preço de Venda (Mercado) (R$)', 'Multiplicador Implícito', 'Margem de Lucro Bruta (%)']]
         df_display_summary.columns = ['Produto', 'Tipo', 'Custo Insumos (R$)', 'Preço de Venda (R$)', 'Multiplicador Implícito', 'Margem Bruta (%)']
         
         st.dataframe(df_display_summary, hide_index=True, use_container_width=True)
@@ -337,7 +350,7 @@ def main():
         
         # --- TAB 1: CUSTO E PREÇO FINAL ---
         with tab1:
-            product_data = df_precificacao_completa[df_precificacao_completa['Produto'] == selected_product].iloc[0]
+            product_data = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
             
             custo_produto = product_data['Custo Total de Insumos (R$)']
             preco_venda = product_data['Preço de Venda (Mercado) (R$)']
@@ -368,7 +381,7 @@ def main():
                 
                 #### 1. Multiplicador Implícito (Fator de Controle):
                 """)
-                # Correção para usar st.latex e escapar as barras invertidas
+                # Corrigido: Usando st.latex e escapando as barras invertidas
                 st.latex(f"""
                     \text{{Multiplicador}} = \\frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}}
                 """)
@@ -376,7 +389,7 @@ def main():
                 st.info(f"""
                 #### 2. Margem Bruta (Indicador de Performance):
                 """)
-                # Correção para usar st.latex e escapar as barras invertidas
+                # Corrigido: Usando st.latex e escapando as barras invertidas
                 st.latex(f"""
                     \text{{Margem Bruta}} = \\frac{{(\text{{Preço}} - \text{{Custo}})}}{{\text{{Preço}}}} \times 100 = \mathbf{{ {margem:,.1f}\% }}
                 """)
