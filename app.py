@@ -350,12 +350,21 @@ def main():
             else:
                 st.info(f"""
                 Você está utilizando o preço de venda de **R$ {preco_venda:,.2f}** para este produto, que tem um custo de insumos de **R$ {custo_produto:,.2f}**.
-
-                * **Multiplicador Implícito (Fator de Controle):**
-                    $$ \text{{Multiplicador}} = \frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}} $$
-                * **Margem Bruta (Indicador de Performance):**
-                    $$ \text{{Margem Bruta}} = \frac{{(\text{{Preço}} - \text{{Custo}})}}{{\text{{Preço}}}} \times 100 = \mathbf{{ {margem:,.1f}\% }} $$
-                    
+                
+                #### 1. Multiplicador Implícito (Fator de Controle):
+                """)
+                st.latex(f"""
+                    \text{{Multiplicador}} = \\frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}}
+                """)
+                
+                st.info(f"""
+                #### 2. Margem Bruta (Indicador de Performance):
+                """)
+                st.latex(f"""
+                    \text{{Margem Bruta}} = \\frac{{(\text{{Preço}} - \text{{Custo}})}}{{\text{{Preço}}}} \times 100 = \mathbf{{ {margem:,.1f}\% }}
+                """)
+                
+                st.info("""
                 **(Lembrete LGPD: Seus dados estão sendo analisados apenas para fins de cálculo de custo e precificação. Não há dados sensíveis de clientes ou ilícitos envolvidos. O código segue as normas de governança, focado em clareza e cálculos objetivos.)**
                 """)
 
