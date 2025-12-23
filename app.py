@@ -7,9 +7,8 @@ import os
 # from dotenv import load_dotenv # Não é mais necessário para o Cloud
 
 # --- Configurações Iniciais ---
-# load_dotenv() # Comentado para ambiente Streamlit Cloud
 
-# Variáveis do Google Sheets (Vem das Secrets)
+# Variáveis do Google Sheets (Vem das Secrets do Streamlit)
 SHEET_ID = os.getenv("SHEET_ID")
 PRIVATE_KEY = os.getenv("GCP_SA_PRIVATE_KEY", "").replace("\\n", "\n")
 CLIENT_EMAIL = os.getenv("GCP_SA_CLIENT_EMAIL")
@@ -18,9 +17,11 @@ CLIENT_EMAIL = os.getenv("GCP_SA_CLIENT_EMAIL")
 
 @st.cache_resource
 def get_service_account_credentials():
-    """Constrói o JSON de credenciais a partir das variáveis de ambiente."""
+    """
+    Constrói o JSON de credenciais a partir das variáveis de ambiente.
+    CRÍTICO: Corrige o bug de variável de ambiente 'token_uri'.
+    """
     if not all([CLIENT_EMAIL, PRIVATE_KEY]):
-        # Isso não deve acontecer se as secrets estiverem configuradas corretamente
         st.error("Erro de configuração: Credenciais do Google Cloud não encontradas. Configure as secrets no Streamlit Cloud.")
         st.stop()
         
@@ -32,7 +33,8 @@ def get_service_account_credentials():
         "client_email": CLIENT_EMAIL,
         "client_id": os.getenv("GCP_SA_CLIENT_ID"),
         "auth_uri": os.getenv("GCP_SA_AUTH_URI"),
-        "token_uri": os.getenv("oauth2.googleapis.com/token"),
+        # LINHA CORRIGIDA AQUI: Buscando a variável correta
+        "token_uri": os.getenv("GCP_SA_TOKEN_URI"), 
         "auth_provider_x509_cert_url": os.getenv("GCP_SA_AUTH_PROVIDER_X509_CERT_URL"),
         "client_x509_cert_url": os.getenv("GCP_SA_CLIENT_X509_CERT_URL"),
         "universe_domain": os.getenv("GCP_SA_UNIVERSE_DOMAIN")
@@ -79,7 +81,6 @@ def calculate_master_ingredient_cost(df_ingredientes):
     df = df_ingredientes.copy()
     df = sanitize_and_convert(df, 'VALOR_PACOTE')
     
-    # Previne divisão por zero (Governança de Dados)
     df['QUANT_PACOTE'] = pd.to_numeric(df['QUANT_PACOTE'], errors='coerce').fillna(1).replace(0, 1)
     
     df['CUSTO_UNITARIO'] = df['VALOR_PACOTE'] / df['QUANT_PACOTE']
@@ -169,7 +170,6 @@ def get_all_calculated_data():
 def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_detalhe, custo_total_dict, df_bases_detalhe, unidade_ingredientes_dict, rendimento_bases):
     """Mostra o detalhe completo da receita e custo do produto final ou da base."""
     
-    # Identifica o tipo de produto
     product_info = df_precificacao_completa[df_precificacao_completa['Produto'] == selected_product].iloc[0]
     product_type = product_info['Tipo']
     
@@ -181,10 +181,8 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
         st.markdown("---")
         st.info("💡 **Análise de Dados:** Este produto é composto por Insumos Mestres e, possivelmente, Receitas Base (massas/coberturas).")
         
-        # 1. Detalhe do Produto Final (NOME_BOLO)
         df_bolo = df_finais_detalhe[df_finais_detalhe['NOME_BOLO'] == selected_product].copy()
         
-        # Prepara o DF para visualização
         df_bolo['Tipo de Item'] = df_bolo['NOME_INGREDIENTE'].apply(
             lambda x: 'Base' if x in rendimento_bases else 'Ingrediente Mestre/Final'
         )
@@ -199,7 +197,6 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
         total_custo = df_display['Custo Total do Item (R$)'].sum()
         st.metric("Custo Total de Insumos", f"R$ {total_custo:,.2f}")
         
-        # 2. Detalhe das Bases Usadas (Se houver)
         bases_usadas = df_bolo[df_bolo['Tipo de Item'] == 'Base']['NOME_INGREDIENTE'].unique()
         
         if bases_usadas.size > 0:
@@ -228,9 +225,8 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
     # --- Lógica para Bolo Comum (é uma Base) ---
     elif 'Bolo Comum' in product_type:
         st.markdown("---")
-        st.info("💡 **Análise de Dados:** Este produto é composto **diretamente** por Insumos Mestres.")
+        st.info("💡 **Análise de Dados:** Este produto (massa pura) é composto **diretamente** por Insumos Mestres.")
         
-        # A lógica é a mesma do detalhe das bases, mas aplicado ao produto selecionado
         base = selected_product
         df_base = df_bases_detalhe[df_bases_detalhe['NOME_BASE'] == base].copy()
         
@@ -258,12 +254,12 @@ def main():
     # --- 1. Carregar Dados ---
     with st.spinner('Ligando a IA da Precificação e buscando os dados no Sheets...'):
         try:
-            # Novo: Retorna df_precificacao_completa e rendimento_bases
             df_precificacao_completa, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict, rendimento_bases = get_all_calculated_data()
             all_products = df_precificacao_completa['Produto'].tolist()
             
         except Exception as e:
-            st.error(f"Não foi possível carregar ou calcular os dados. Verifique a planilha ou as Secrets. Erro: {e}")
+            # Captura erros de autenticação ou leitura de dados
+            st.error(f"Não foi possível carregar ou calcular os dados. Erro: {e}")
             return
             
     st.success("Cálculos concluídos! Deslize para baixo ou comece sua consulta.")
@@ -275,20 +271,18 @@ def main():
     # Dropdown para consulta manual, incluindo Bases e Finais
     selected_product = st.selectbox(
         "Selecione o Produto (Bolo Comum ou Especial) para Análise Detalhada:",
-        options=["Selecione um Produto..."] + sorted(all_products) # Ordena alfabeticamente
+        options=["Selecione um Produto..."] + sorted(all_products)
     )
     
     if selected_product == "Selecione um Produto...":
-        st.info("Selecione um produto no menu suspenso acima.")
+        st.info("Selecione um produto no menu suspenso acima para ver o detalhe de custo e receita.")
         
-        # Visão Geral de Custo de Todos os Produtos
         st.subheader("Visão Geral de Custo de Todos os Produtos")
         st.dataframe(df_precificacao_completa, hide_index=True, use_container_width=True)
         return
         
     # Encontrou um produto
     else:
-        # Usa abas para organizar a informação
         tab1, tab2 = st.tabs(["💰 Precificação (Custo Resumido)", "📋 Detalhe da Receita (Engenharia de Insumos)"])
         
         # --- TAB 1: CUSTO RESUMIDO ---
@@ -298,8 +292,7 @@ def main():
             
             st.markdown(f"""
             > **Próxima Etapa:** O custo de insumos é R$ **{custo_produto:,.2f}**. 
-            Para um Bolo Comum (Massa), este já é o seu custo direto. 
-            Para um Bolo Especial, este é o custo de todos os insumos.
+            Vamos integrar a calculadora de Markup/Margem para obter o Preço de Venda Final, André.
             """)
             
         # --- TAB 2: DETALHE DA RECEITA ---
