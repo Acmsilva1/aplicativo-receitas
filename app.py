@@ -189,34 +189,32 @@ def get_all_calculated_data():
     df_precificacao_completa.rename(columns={'PRECO_VENDA_FINAL': 'Preço de Venda (Mercado) (R$)'}, inplace=True)
     df_precificacao_completa['Preço de Venda (Mercado) (R$)'] = df_precificacao_completa['Preço de Venda (Mercado) (R$)'].fillna(0.0)
     
-    # 6. Calcular a Margem de Lucro Bruta e o Multiplicador Implícito
+    # 6. Calcular o Lucro Bruto (R$) e a Margem Percentual
     
     # Evita divisão por zero (substitui 0 por NaN para não dividir)
     df_precificacao_completa['Custo Total de Insumos (R$)'] = df_precificacao_completa['Custo Total de Insumos (R$)'].replace(0, np.nan) 
     
-    # 6a. Margem Bruta
-    # Margem Bruta = (Preço - Custo) / Preço. Multiplica por 100 para %
-    df_precificacao_completa['Margem de Lucro Bruta (%)'] = (
-        (df_precificacao_completa['Preço de Venda (Mercado) (R$)'] - df_precificacao_completa['Custo Total de Insumos (R$)']) / 
+    # 6a. Lucro Bruto (R$)
+    df_precificacao_completa['Lucro Bruto (R$)'] = (
+        df_precificacao_completa['Preço de Venda (Mercado) (R$)'] - df_precificacao_completa['Custo Total de Insumos (R$)']
+    )
+    
+    # 6b. Margem Bruta (%) - Mantida para a tabela e o detalhe final
+    df_precificacao_completa['Margem Bruta (%)'] = (
+        df_precificacao_completa['Lucro Bruto (R$)'] / 
         df_precificacao_completa['Preço de Venda (Mercado) (R$)']
     ) * 100
     
-    # 6b. Multiplicador Implícito
-    # Multiplicador = Preço / Custo
-    df_precificacao_completa['Multiplicador Implícito'] = (
-        df_precificacao_completa['Preço de Venda (Mercado) (R$)'] / 
-        df_precificacao_completa['Custo Total de Insumos (R$)']
-    )
     
     # TRATAMENTO DE ERROS DE CÁLCULO (Infinito, NaN) - GARANTE FLOAT PURO
-    for col in ['Margem de Lucro Bruta (%)', 'Multiplicador Implícito']:
-        # Substitui Infinito e -Infinito por NaN (resultado de divisão por zero)
+    for col in ['Lucro Bruto (R$)', 'Margem Bruta (%)']:
+        # Substitui Infinito e -Infinito por NaN 
         df_precificacao_completa[col] = df_precificacao_completa[col].replace([np.inf, -np.inf], np.nan)
         # Preenche os NaN resultantes (e os originais) com 0.0
         df_precificacao_completa[col] = df_precificacao_completa[col].fillna(0.0)
 
-    df_precificacao_completa['Margem de Lucro Bruta (%)'] = df_precificacao_completa['Margem de Lucro Bruta (%)'].round(1) 
-    df_precificacao_completa['Multiplicador Implícito'] = df_precificacao_completa['Multiplicador Implícito'].round(2)
+    df_precificacao_completa['Lucro Bruto (R$)'] = df_precificacao_completa['Lucro Bruto (R$)'].round(2) 
+    df_precificacao_completa['Margem Bruta (%)'] = df_precificacao_completa['Margem Bruta (%)'].round(1)
 
     # Ordenação final
     df_precificacao_completa = df_precificacao_completa.sort_values(by='Preço de Venda (Mercado) (R$)', ascending=False)
@@ -342,22 +340,21 @@ def main():
     if selected_product == "Selecione um Produto...":
         st.info("Selecione um produto para comparar o custo dos insumos (Seu Custo) com o Preço de Venda (Seu Preço de Mercado).")
         
-        st.subheader("Visão Geral de Margem de Lucro Bruta e Multiplicador")
+        st.subheader("Visão Geral de Lucro Bruto e Margem Percentual")
         
-        # Tabela resumo com todas as métricas
-        df_display_summary = df_precificacao_completa[['PRODUTO', 'Tipo', 'Custo Total de Insumos (R$)', 'Preço de Venda (Mercado) (R$)', 'Multiplicador Implícito', 'Margem de Lucro Bruta (%)']]
-        df_display_summary.columns = ['Produto', 'Tipo', 'Custo Insumos (R$)', 'Preço de Venda (R$)', 'Multiplicador Implícito', 'Margem Bruta (%)']
+        # Tabela resumo
+        df_display_summary = df_precificacao_completa[['PRODUTO', 'Tipo', 'Custo Total de Insumos (R$)', 'Preço de Venda (Mercado) (R$)', 'Lucro Bruto (R$)', 'Margem Bruta (%)']]
+        df_display_summary.columns = ['Produto', 'Tipo', 'Custo Insumos (R$)', 'Preço de Venda (R$)', 'Lucro Bruto (R$)', 'Margem Bruta (%)']
         
         st.dataframe(df_display_summary, hide_index=True, use_container_width=True)
         return
         
     # Encontrou um produto
     else:
-        tab1, tab2 = st.tabs(["📊 Análise de Margem", "📋 Detalhe da Receita (Engenharia de Insumos)"])
+        tab1, tab2 = st.tabs(["📊 Análise de Lucro e Margem", "📋 Detalhe da Receita (Engenharia de Insumos)"])
         
         # --- TAB 1: CUSTO E PREÇO FINAL ---
         with tab1:
-            # O .iloc[0] já garante que estamos pegando uma Series
             product_data = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
             
             custo_produto = product_data['Custo Total de Insumos (R$)']
@@ -365,76 +362,70 @@ def main():
             
             # TRATAMENTO DE TIPAGEM: Forçar para float
             try:
-                margem = float(product_data['Margem de Lucro Bruta (%)'])
+                lucro_bruto = float(product_data['Lucro Bruto (R$)'])
             except:
-                margem = 0.0
+                lucro_bruto = 0.0
             
             try:
-                multiplicador_implicito = float(product_data['Multiplicador Implícito'])
+                margem_percentual = float(product_data['Margem Bruta (%)'])
             except:
-                multiplicador_implicito = 0.0
+                margem_percentual = 0.0
 
-            # Quatro colunas para as métricas principais
-            col1, col2, col3, col4 = st.columns(4)
+            # Três colunas para as métricas principais
+            col1, col2, col3 = st.columns(3)
             col1.metric("Custo Total de Insumos (Seu Custo)", f"R$ {custo_produto:,.2f}")
             col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
             
-            # --- CÁLCULO DAS MÉTRICAS DE CORES E VALORES ---
+            # --- CÁLCULO DO LUCRO BRUTO EM R$ ---
             
-            if preco_venda == 0.0 or custo_produto == 0.0:
-                # Se não há preço ou custo, a margem é 0 e a cor não deve aparecer (off)
-                margem_color = 'off' 
-                margem_display_value = f"{margem:,.1f} %"
-                multiplicador_color = 'off'
-                multiplicador_display_value = f"x{multiplicador_implicito:,.2f}"
-            else:
-                # Define a cor com base nos thresholds (40% e 20% para margem)
-                margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
-                margem_display_value = f"{margem:,.1f} %"
-                
-                # Define a cor com base nos thresholds (3.0 e 2.0 para multiplicador)
-                multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
-                multiplicador_display_value = f"x{multiplicador_implicito:,.2f}"
-
-            # CHAMADA CORRIGIDA DO ST.METRIC: Usando delta=None para garantir que a função seja chamada corretamente.
+            # Usando o Lucro Bruto (R$) como delta, o Streamlit automaticamente colore a flecha
+            # (Verde se delta > 0, Vermelho se delta < 0, Cinza se delta = 0)
             col3.metric(
-                label="Margem de Lucro Bruta", 
-                value=margem_display_value, 
-                delta=None, 
-                delta_color=margem_color
+                label="Lucro Bruto (R$)", 
+                value=f"R$ {lucro_bruto:,.2f}", 
+                delta=lucro_bruto,
+                delta_color='normal' # 'normal' é verde/vermelho padrão
             )
             
-            col4.metric(
-                label="Multiplicador Implícito", 
-                value=multiplicador_display_value,
-                delta=None, 
-                delta_color=multiplicador_color
-            )
+            # --- EXIBIÇÃO DA MARGEM PERCENTUAL (Separado para evitar o erro anterior) ---
+            
+            margem_color = '' 
+            if margem_percentual > 40:
+                margem_color = "🟢 **Excelente**"
+            elif margem_percentual >= 20:
+                margem_color = "🟡 **Razoável**"
+            else:
+                margem_color = "🔴 **Baixa**"
             
             st.markdown("---")
-            st.markdown(f"#### Detalhamento da Margem de Lucro e Multiplicador")
+            st.markdown(f"#### Margem de Lucro Bruta: {margem_color}")
+            st.subheader(f"**{margem_percentual:,.1f} %**")
+
+            
+            st.markdown("---")
+            st.markdown(f"#### Detalhamento de Lucro e Margem")
             
             if preco_venda == 0.0:
-                 st.error("🚨 **ALERTA DE DADOS:** Este produto não possui preço de venda definido na sua tabela de preços. A margem e o multiplicador não podem ser calculados.")
+                 st.error("🚨 **ALERTA DE DADOS:** Este produto não possui preço de venda definido na sua tabela de preços. O lucro não pode ser calculado.")
             else:
                 st.info(f"""
                 Você está utilizando o preço de venda de **R$ {preco_venda:,.2f}** para este produto, que tem um custo de insumos de **R$ {custo_produto:,.2f}**.
                 
-                #### 1. Multiplicador Implícito (Fator de Controle):
+                #### 1. Lucro Bruto (Subtração Simples):
                 """)
                 st.latex(f"""
-                    \text{{Multiplicador}} = \\frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}}
+                    \text{{Lucro Bruto (R\$)}} = \text{{Preço de Venda}} - \text{{Custo Total}} = \text{{R\$ {preco_venda:,.2f}}} - \text{{R\$ {custo_produto:,.2f}}} = \mathbf{{\text{{R\$ {lucro_bruto:,.2f}}}}}
                 """)
                 
                 st.info(f"""
-                #### 2. Margem Bruta (Indicador de Performance):
+                #### 2. Margem Bruta Percentual:
                 """)
                 st.latex(f"""
-                    \text{{Margem Bruta}} = \\frac{{(\text{{Preço}} - \text{{Custo}})}}{{\text{{Preço}}}} \times 100 = \mathbf{{ {margem:,.1f}\% }}
+                    \text{{Margem Bruta (\\%)}} = \\frac{{\text{{Lucro Bruto}}}}{{\text{{Preço de Venda}}}} \times 100 = \mathbf{{ {margem_percentual:,.1f}\% }}
                 """)
                 
                 st.info("""
-                **(Lembrete LGPD: Seus dados estão sendo analisados apenas para fins de cálculo de custo e precificação. Não há dados sensíveis de clientes ou ilícitos envolvidos. O código segue as normas de governança, focado em clareza e cálculos objetivos.)**
+                **(Lembrete LGPD: Seus dados estão sendo analisados apenas para fins de cálculo de custo e precificação. O foco no Lucro Bruto (R$) simplifica a interpretação e evita os erros de tipagem do Streamlit que ocorriam com a métrica percentual direta.)**
                 """)
 
         # --- TAB 2: DETALHE DA RECEITA ---
