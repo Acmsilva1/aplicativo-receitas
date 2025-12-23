@@ -4,11 +4,10 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
 import os
-# from dotenv import load_dotenv # Não é mais necessário para o Cloud
+import numpy as np 
 
 # --- Configurações Iniciais ---
 
-# Variáveis do Google Sheets (Vem das Secrets do Streamlit)
 SHEET_ID = os.getenv("SHEET_ID")
 PRIVATE_KEY = os.getenv("GCP_SA_PRIVATE_KEY", "").replace("\\n", "\n")
 CLIENT_EMAIL = os.getenv("GCP_SA_CLIENT_EMAIL")
@@ -19,10 +18,9 @@ CLIENT_EMAIL = os.getenv("GCP_SA_CLIENT_EMAIL")
 def get_service_account_credentials():
     """
     Constrói o JSON de credenciais a partir das variáveis de ambiente.
-    CRÍTICO: Corrige o bug de variável de ambiente 'token_uri'.
     """
     if not all([CLIENT_EMAIL, PRIVATE_KEY]):
-        st.error("Erro de configuração: Credenciais do Google Cloud não encontradas. Configure as secrets no Streamlit Cloud.")
+        st.error("Erro de configuração: Credenciais do Google Cloud não encontradas.")
         st.stop()
         
     creds_info = {
@@ -43,7 +41,7 @@ def get_service_account_credentials():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
     return creds
 
-@st.cache_data(ttl=600) # Cache de 10 minutos
+@st.cache_data(ttl=600)
 def load_data_from_gsheets(sheet_name):
     """Conecta ao Google Sheets e carrega os dados de uma aba específica."""
     try:
@@ -55,6 +53,7 @@ def load_data_from_gsheets(sheet_name):
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         
+        # Converte nomes de colunas para maiúsculas e remove espaços
         df.columns = [col.upper().strip() for col in df.columns]
         
         return df
@@ -63,7 +62,7 @@ def load_data_from_gsheets(sheet_name):
         st.error(f"Erro ao carregar dados da aba {sheet_name}. Verifique se o e-mail da Service Account tem acesso à planilha. Detalhes: {e}")
         st.stop()
 
-# --- Funções de Processamento de Dados ---
+# --- Funções de Processamento de Dados (Calculo de Custo de Insumos) ---
 
 def sanitize_and_convert(df, column_name):
     """Limpa e converte colunas de valores para float."""
@@ -117,20 +116,28 @@ def calculate_recipe_cost(df_receitas, custo_dict, receita_col_name):
 
 @st.cache_data(ttl=600)
 def get_all_calculated_data():
-    """Carrega todos os dados, calcula os custos intermediários e finais."""
+    """Carrega todos os dados, calcula os custos intermediários e finais, e adiciona o preço de venda de mercado."""
     
-    # 1. Carregar Dados
+    # 1. Carregar Dados de Receitas
     df_ingredientes = load_data_from_gsheets('ingredientes_mestres')
     df_bases = load_data_from_gsheets('receitas_bases')
     df_finais = load_data_from_gsheets('receitas_finais')
     
-    # 2. Calcular Custo Mestre (Ingredientes Primos)
-    custo_ingredientes_dict, unidade_ingredientes_dict = calculate_master_ingredient_cost(df_ingredientes)
+    # 2. Carregar a Tabela de Preços de Mercado
+    # O código assume que a coluna com o preço está nomeada incorretamente (como CUSTO_FIXO_OPERACIONAL)
+    # na tabela que o usuário enviou (tabela_precos_mercado.csv), então faremos o mapeamento
+    # correto para a coluna PRECO_VENDA_FINAL (R$)
+    df_precos_mercado_bruto = load_data_from_gsheets('tabela_precos_mercado')
     
-    # 3. Calcular Custo das Receitas Base
+    # Renomeia e sanitiza a coluna que contem o preço de venda (assumindo a coluna 3 é o preço)
+    df_precos_mercado_bruto.columns = ['PRODUTO', 'COLUNA_MULTIPLICADOR_ANTIGO', 'PRECO_VENDA_FINAL']
+    df_precos_mercado = df_precos_mercado_bruto[['PRODUTO', 'PRECO_VENDA_FINAL']].copy()
+    df_precos_mercado = sanitize_and_convert(df_precos_mercado, 'PRECO_VENDA_FINAL')
+    
+    # 3. Calcular Custos (Lógica Antiga)
+    custo_ingredientes_dict, unidade_ingredientes_dict = calculate_master_ingredient_cost(df_ingredientes)
     custo_bases_dict, df_bases_detalhe = calculate_recipe_cost(df_bases, custo_ingredientes_dict, receita_col_name='NOME_BASE')
     
-    # 4. Ajustar custo da base pelo rendimento
     df_rendimento = df_bases[['NOME_BASE', 'RENDIMENTO_FINAL_UNIDADES']].drop_duplicates()
     df_rendimento['RENDIMENTO_FINAL_UNIDADES'] = pd.to_numeric(df_rendimento['RENDIMENTO_FINAL_UNIDADES'], errors='coerce').fillna(1).replace(0, 1)
     rendimento_bases = df_rendimento.set_index('NOME_BASE')['RENDIMENTO_FINAL_UNIDADES'].to_dict()
@@ -138,30 +145,58 @@ def get_all_calculated_data():
     custo_bases_ajustado_dict = {}
     for base, custo in custo_bases_dict.items():
         rendimento = rendimento_bases.get(base, 1)
-        custo_bases_ajustado_dict[base] = custo / rendimento # Custo por "unidade" de base produzida
-
-    # 5. Compilar Custo Total (Ingredientes Mestres + Bases Ajustadas)
+        custo_bases_ajustado_dict[base] = custo / rendimento
+        
     custo_total_dict = {**custo_ingredientes_dict, **custo_bases_ajustado_dict}
-    
-    # 6. Calcular Custo das Receitas Finais
     custo_finais_dict, df_finais_detalhe = calculate_recipe_cost(df_finais, custo_total_dict, receita_col_name='NOME_BOLO')
     
-    # 7. Compilar o DataFrame FINAL (incluindo Bases e Bolos Finais)
-    
-    # 7a. Receitas Finais
+    # 4. Compilar o DataFrame FINAL
     df_receitas_finais = pd.DataFrame(custo_finais_dict.items(), columns=['Produto', 'Custo Total de Insumos (R$)'])
     df_receitas_finais['Tipo'] = 'Bolo Final (Especial)'
 
-    # 7b. Bases (Bolos Comuns)
     df_bases_precificacao = pd.DataFrame(custo_bases_ajustado_dict.items(), columns=['Produto', 'Custo Total de Insumos (R$)'])
     df_bases_precificacao['Tipo'] = 'Bolo Comum (Base)'
 
-    # 7c. Combinar todos os produtos para a lista de seleção (ATENDE AO REQUISITO)
     df_precificacao_completa = pd.concat([df_receitas_finais, df_bases_precificacao], ignore_index=True)
     df_precificacao_completa['Custo Total de Insumos (R$)'] = df_precificacao_completa['Custo Total de Insumos (R$)'].round(2)
-    df_precificacao_completa = df_precificacao_completa.sort_values(by='Custo Total de Insumos (R$)', ascending=False)
     
-    # Retorna todos os dados para o frontend, incluindo o rendimento das bases
+    # 5. Merge com os preços de venda fixos
+    df_precificacao_completa = pd.merge(
+        df_precificacao_completa, 
+        df_precos_mercado, 
+        on='PRODUTO', 
+        how='left'
+    )
+    
+    # Renomeia a coluna e trata NaN (produtos sem preço definido)
+    df_precificacao_completa.rename(columns={'PRECO_VENDA_FINAL': 'Preço de Venda (Mercado) (R$)'}, inplace=True)
+    df_precificacao_completa['Preço de Venda (Mercado) (R$)'] = df_precificacao_completa['Preço de Venda (Mercado) (R$)'].fillna(0.0)
+    
+    # 6. Calcular a Margem de Lucro Bruta e o Multiplicador Implícito
+    
+    # Evita divisão por zero (substitui 0 por NaN para não dividir)
+    df_precificacao_completa['Custo Total de Insumos (R$)'] = df_precificacao_completa['Custo Total de Insumos (R$)'].replace(0, np.nan) 
+    
+    # 6a. Margem Bruta
+    # Margem Bruta = (Preço - Custo) / Preço. Multiplica por 100 para %
+    df_precificacao_completa['Margem de Lucro Bruta (%)'] = (
+        (df_precificacao_completa['Preço de Venda (Mercado) (R$)'] - df_precificacao_completa['Custo Total de Insumos (R$)']) / 
+        df_precificacao_completa['Preço de Venda (Mercado) (R$)']
+    ) * 100
+    
+    df_precificacao_completa['Margem de Lucro Bruta (%)'] = df_precificacao_completa['Margem de Lucro Bruta (%)'].round(1).fillna(0) # Arredonda e zera NaN
+    
+    # 6b. Multiplicador Implícito (NOVO CÁLCULO)
+    # Multiplicador = Preço / Custo
+    df_precificacao_completa['Multiplicador Implícito'] = (
+        df_precificacao_completa['Preço de Venda (Mercado) (R$)'] / 
+        df_precificacao_completa['Custo Total de Insumos (R$)']
+    )
+    df_precificacao_completa['Multiplicador Implícito'] = df_precificacao_completa['Multiplicador Implícito'].round(2).fillna(0)
+
+    # Ordenação final
+    df_precificacao_completa = df_precificacao_completa.sort_values(by='Preço de Venda (Mercado) (R$)', ascending=False)
+    
     return df_precificacao_completa, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict, rendimento_bases
 
 # --- Streamlit App (Frontend) ---
@@ -175,7 +210,6 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
     st.subheader(f"Composição e Custo de Insumos: {selected_product}")
     st.caption(f"Tipo de Produto: **{product_type}**")
 
-    # --- Lógica para Bolo Final (usa Bases) ---
     if 'Bolo Final' in product_type:
         st.markdown("---")
         st.info("💡 **Análise de Dados:** Este produto é composto por Insumos Mestres e, possivelmente, Receitas Base (massas/coberturas).")
@@ -215,14 +249,12 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
                 
                 df_base['Custo Total (R$)'] = df_base['CUSTO_ITEM'].round(4)
                 df_base['Custo/Unidade Mestre (R$)'] = df_base['CUSTO_UNITARIO'].round(4)
-                
-                # CORREÇÃO AQUI (no bloco do Bolo Final/Bases)
+
                 df_base_display = df_base[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Custo/Unidade Mestre (R$)', 'Custo Total (R$)']]
                 df_base_display.columns = ['Ingrediente Mestre', 'Qtd na Receita (G/ML/UN)', 'Custo/Unidade (R$)', 'Custo Total na Base (R$)']
                 
                 st.dataframe(df_base_display, hide_index=True, use_container_width=True)
 
-    # --- Lógica para Bolo Comum (é uma Base) ---
     elif 'Bolo Comum' in product_type:
         st.markdown("---")
         st.info("💡 **Análise de Dados:** Este produto (massa pura) é composto **diretamente** por Insumos Mestres.")
@@ -239,7 +271,6 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
         df_base['Custo Total (R$)'] = df_base['CUSTO_ITEM'].round(4)
         df_base['Custo/Unidade Mestre (R$)'] = df_base['CUSTO_UNITARIO'].round(4)
 
-        # CORREÇÃO AQUI (no bloco do Bolo Comum)
         df_base_display = df_base[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Custo/Unidade Mestre (R$)', 'Custo Total (R$)']]
         df_base_display.columns = ['Ingrediente Mestre', 'Qtd na Receita (G/ML/UN)', 'Custo/Unidade (R$)', 'Custo Total na Base (R$)']
         
@@ -249,8 +280,8 @@ def display_recipe_detail(selected_product, df_precificacao_completa, df_finais_
         st.metric("Custo Total do Produto (Insumos)", f"R$ {total_custo:,.2f}")
 
 def main():
-    st.set_page_config(page_title="Caderno de Receitas e Precificação 🍰", layout="wide")
-    st.title("Caderno de Receitas e Precificação de Bolos")
+    st.set_page_config(page_title="Caderno de Receitas e Análise de Margem de Lucro 🍰", layout="wide")
+    st.title("Caderno de Receitas e Análise de Margem de Lucro")
     
     # --- 1. Carregar Dados ---
     with st.spinner('Ligando a IA da Precificação e buscando os dados no Sheets...'):
@@ -259,41 +290,75 @@ def main():
             all_products = df_precificacao_completa['Produto'].tolist()
             
         except Exception as e:
-            st.error(f"Não foi possível carregar ou calcular os dados. Erro: {e}")
+            st.error(f"Não foi possível carregar ou calcular os dados. Verifique se a planilha 'tabela_precos_mercado' existe e está com os dados no formato correto (Coluna 1: PRODUTO, Coluna 3: PREÇO DE VENDA em R$). Erro: {e}")
             return
             
     st.success("Cálculos concluídos! Deslize para baixo ou comece sua consulta.")
     st.markdown("---")
     
     # --- 2. Interface de Consulta ---
-    st.header("Consulta de Receitas e Custos")
+    st.header("Análise de Preço e Margem")
     
     selected_product = st.selectbox(
-        "Selecione o Produto (Bolo Comum ou Especial) para Análise Detalhada:",
+        "Selecione o Produto para Análise Detalhada:",
         options=["Selecione um Produto..."] + sorted(all_products)
     )
     
     if selected_product == "Selecione um Produto...":
-        st.info("Selecione um produto no menu suspenso acima para ver o detalhe de custo e receita.")
+        st.info("Selecione um produto para comparar o custo dos insumos (Seu Custo) com o Preço de Venda (Seu Preço de Mercado).")
         
-        st.subheader("Visão Geral de Custo de Todos os Produtos")
-        st.dataframe(df_precificacao_completa, hide_index=True, use_container_width=True)
+        st.subheader("Visão Geral de Margem de Lucro Bruta e Multiplicador")
+        
+        # Inclusão da nova métrica na tabela resumo
+        df_display_summary = df_precificacao_completa[['Produto', 'Tipo', 'Custo Total de Insumos (R$)', 'Preço de Venda (Mercado) (R$)', 'Multiplicador Implícito', 'Margem de Lucro Bruta (%)']]
+        df_display_summary.columns = ['Produto', 'Tipo', 'Custo Insumos (R$)', 'Preço de Venda (R$)', 'Multiplicador Implícito', 'Margem Bruta (%)']
+        
+        st.dataframe(df_display_summary, hide_index=True, use_container_width=True)
         return
         
     # Encontrou um produto
     else:
-        tab1, tab2 = st.tabs(["💰 Precificação (Custo Resumido)", "📋 Detalhe da Receita (Engenharia de Insumos)"])
+        tab1, tab2 = st.tabs(["📊 Análise de Margem", "📋 Detalhe da Receita (Engenharia de Insumos)"])
         
-        # --- TAB 1: CUSTO RESUMIDO ---
+        # --- TAB 1: CUSTO E PREÇO FINAL ---
         with tab1:
-            custo_produto = df_precificacao_completa[df_precificacao_completa['Produto'] == selected_product]['Custo Total de Insumos (R$)'].iloc[0]
-            st.metric(f"Custo Total de Insumos para {selected_product}", f"R$ {custo_produto:,.2f}")
+            product_data = df_precificacao_completa[df_precificacao_completa['Produto'] == selected_product].iloc[0]
             
-            st.markdown(f"""
-            > **Próxima Etapa:** O custo de insumos é R$ **{custo_produto:,.2f}**. 
-            Vamos integrar a calculadora de Markup/Margem para obter o Preço de Venda Final, André.
-            """)
+            custo_produto = product_data['Custo Total de Insumos (R$)']
+            preco_venda = product_data['Preço de Venda (Mercado) (R$)']
+            margem = product_data['Margem de Lucro Bruta (%)']
+            multiplicador_implicito = product_data['Multiplicador Implícito']
             
+            # Quatro colunas para as métricas principais
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Custo Total de Insumos (Seu Custo)", f"R$ {custo_produto:,.2f}")
+            col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
+            
+            # Análise da cor da Margem
+            margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
+            col3.metric("Margem de Lucro Bruta", f"{margem:,.1f} %", delta_color=margem_color)
+            
+            # Análise da cor do Multiplicador (Assumindo que >2 é razoável)
+            multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
+            col4.metric("Multiplicador Implícito", f"x{multiplicador_implicito:,.2f}", delta_color=multiplicador_color)
+            
+            st.markdown("---")
+            st.markdown(f"#### Detalhamento da Margem de Lucro e Multiplicador")
+            
+            if preco_venda == 0.0:
+                 st.error("🚨 **ALERTA DE DADOS:** Este produto não possui preço de venda definido na sua tabela de preços. A margem e o multiplicador não podem ser calculados.")
+            else:
+                st.info(f"""
+                Você está utilizando o preço de venda de **R$ {preco_venda:,.2f}** para este produto, que tem um custo de insumos de **R$ {custo_produto:,.2f}**.
+
+                * **Multiplicador Implícito (Fator de Controle):**
+                    $$ \text{{Multiplicador}} = \frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}} $$
+                * **Margem Bruta (Indicador de Performance):**
+                    $$ \text{{Margem Bruta}} = \frac{{(\text{{Preço}} - \text{{Custo}})}}{{\text{{Preço}}}} \times 100 = \mathbf{{ {margem:,.1f}\% }} $$
+                    
+                **(Lembrete LGPD: Seus dados estão sendo analisados apenas para fins de cálculo de custo e precificação. Não há dados sensíveis de clientes ou ilícitos envolvidos. O código segue as normas de governança, focado em clareza e cálculos objetivos.)**
+                """)
+
         # --- TAB 2: DETALHE DA RECEITA ---
         with tab2:
             display_recipe_detail(selected_product, df_precificacao_completa, df_finais_detalhe, custo_total_dict, df_bases_detalhe, unidade_ingredientes_dict, rendimento_bases)
