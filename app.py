@@ -208,9 +208,7 @@ def get_all_calculated_data():
         df_precificacao_completa['Custo Total de Insumos (R$)']
     )
     
-    # NOVO E AGRESSIVO TRATAMENTO DE ERROS DE CÁLCULO (Infinito, NaN)
-    # Garante que as colunas de métricas sejam sempre números válidos antes do Streamlit
-    
+    # TRATAMENTO DE ERROS DE CÁLCULO (Infinito, NaN) - GARANTE FLOAT PURO
     for col in ['Margem de Lucro Bruta (%)', 'Multiplicador Implícito']:
         # Substitui Infinito e -Infinito por NaN (resultado de divisão por zero)
         df_precificacao_completa[col] = df_precificacao_completa[col].replace([np.inf, -np.inf], np.nan)
@@ -359,18 +357,22 @@ def main():
         
         # --- TAB 1: CUSTO E PREÇO FINAL ---
         with tab1:
+            # O .iloc[0] já garante que estamos pegando uma Series
             product_data = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
             
             custo_produto = product_data['Custo Total de Insumos (R$)']
             preco_venda = product_data['Preço de Venda (Mercado) (R$)']
-            margem = product_data['Margem de Lucro Bruta (%)']
-            multiplicador_implicito = product_data['Multiplicador Implícito']
             
-            # Não precisamos mais do tratamento de pd.isna() no frontend, pois ele foi movido para o backend
-            # O Streamlit ainda precisa de um float para fazer as comparações corretamente:
-            if not isinstance(margem, (float, int)):
+            # NOVO TRATAMENTO DE TIPAGEM: Forçar para float para o Streamlit engolir
+            # Se a tipagem falhar por algum motivo (embora o backend tenha limpado), ele retorna 0.0
+            try:
+                margem = float(product_data['Margem de Lucro Bruta (%)'])
+            except:
                 margem = 0.0
-            if not isinstance(multiplicador_implicito, (float, int)):
+            
+            try:
+                multiplicador_implicito = float(product_data['Multiplicador Implícito'])
+            except:
                 multiplicador_implicito = 0.0
 
             # Quatro colunas para as métricas principais
@@ -397,6 +399,7 @@ def main():
                 
                 #### 1. Multiplicador Implícito (Fator de Controle):
                 """)
+                # Note: LaTeX para matemática formal/complexa
                 st.latex(f"""
                     \text{{Multiplicador}} = \\frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}}
                 """)
