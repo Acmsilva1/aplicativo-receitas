@@ -1,0 +1,6 @@
+# Arquivos de credenciais e ambiente (Segurança acima de tudo!)
+.env
+jason google cloud.json
+
+# Streamlit
+.streamlit/
