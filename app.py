@@ -123,16 +123,18 @@ def get_all_calculated_data():
     df_bases = load_data_from_gsheets('receitas_bases')
     df_finais = load_data_from_gsheets('receitas_finais')
     
-    # 2. Carregar a Tabela de Preços de Mercado (NOVA LÓGICA DE 2 COLUNAS)
+    # 2. Carregar a Tabela de Preços de Mercado (LÓGICA DE 2 COLUNAS)
     df_precos_mercado_bruto = load_data_from_gsheets('tabela_precos_mercado')
     
     COL_PRODUTO_KEY = 'PRODUTO'
     
     if COL_PRODUTO_KEY not in df_precos_mercado_bruto.columns:
+        # Se o nome da coluna não for PRODUTO (tudo maiúsculo), pode ser 'Produto', vamos tentar padronizar para o merge.
+        # Mas se o erro persistir, o problema está na 1ª coluna da planilha.
         st.error(f"Coluna principal '{COL_PRODUTO_KEY}' não encontrada na aba 'tabela_precos_mercado'. Nomes das colunas carregadas: {df_precos_mercado_bruto.columns.tolist()}. Verifique se a 1ª coluna se chama 'PRODUTO' e não tem caracteres ocultos.")
         st.stop()
         
-    # Assume que a segunda coluna é o preço de venda
+    # Assume que a segunda coluna é o preço de venda (ignora o nome original como CUSTO_FIXO_OPERACIONAL)
     colunas_disponiveis = df_precos_mercado_bruto.columns.tolist()
     if len(colunas_disponiveis) < 2:
         st.error("A aba 'tabela_precos_mercado' deve ter pelo menos duas colunas (PRODUTO e PREÇO DE VENDA).")
@@ -304,7 +306,7 @@ def main():
     with st.spinner('Ligando a IA da Precificação e buscando os dados no Sheets...'):
         try:
             df_precificacao_completa, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict, rendimento_bases = get_all_calculated_data()
-            all_products = df_precificacao_completa['PRODUTO'].tolist() # Usa 'PRODUTO' (Tudo maiúsculo)
+            all_products = df_precificacao_completa['PRODUTO'].tolist()
             
         except Exception as e:
             st.error(f"Não foi possível carregar ou calcular os dados. Verifique o checklist abaixo. Erro: {e}")
@@ -350,33 +352,33 @@ def main():
         
         # --- TAB 1: CUSTO E PREÇO FINAL ---
         with tab1:
-                product_data = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
-                
-                custo_produto = product_data['Custo Total de Insumos (R$)']
-                preco_venda = product_data['Preço de Venda (Mercado) (R$)']
-                margem = product_data['Margem de Lucro Bruta (%)']
-                multiplicador_implicito = product_data['Multiplicador Implícito']
-                
-                # NOVO TRATAMENTO CONTRA NaN/None
-                if pd.isna(margem):
-                    margem = 0.0
-                if pd.isna(multiplicador_implicito):
-                    multiplicador_implicito = 0.0
+            product_data = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
+            
+            custo_produto = product_data['Custo Total de Insumos (R$)']
+            preco_venda = product_data['Preço de Venda (Mercado) (R$)']
+            margem = product_data['Margem de Lucro Bruta (%)']
+            multiplicador_implicito = product_data['Multiplicador Implícito']
+            
+            # NOVO TRATAMENTO CONTRA NaN/None (Para garantir que a lógica de cor não falhe)
+            if pd.isna(margem):
+                margem = 0.0
+            if pd.isna(multiplicador_implicito):
+                multiplicador_implicito = 0.0
 
-                # Quatro colunas para as métricas principais
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Custo Total de Insumos (Seu Custo)", f"R$ {custo_produto:,.2f}")
-                col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
-                
-                # Análise da cor da Margem
-                margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
-                col3.metric("Margem de Lucro Bruta", f"{margem:,.1f} %", delta_color=margem_color)
-                
-                # Análise da cor do Multiplicador (Assumindo que >2 é razoável)
-                multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
-                col4.metric("Multiplicador Implícito", f"x{multiplicador_implicito:,.2f}", delta_color=multiplicador_color)
-                
-                st.markdown("---")
+            # Quatro colunas para as métricas principais
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Custo Total de Insumos (Seu Custo)", f"R$ {custo_produto:,.2f}")
+            col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
+            
+            # Análise da cor da Margem
+            margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
+            col3.metric("Margem de Lucro Bruta", f"{margem:,.1f} %", delta_color=margem_color)
+            
+            # Análise da cor do Multiplicador (Assumindo que >2 é razoável)
+            multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
+            col4.metric("Multiplicador Implícito", f"x{multiplicador_implicito:,.2f}", delta_color=multiplicador_color)
+            
+            st.markdown("---")
             st.markdown(f"#### Detalhamento da Margem de Lucro e Multiplicador")
             
             if preco_venda == 0.0:
@@ -387,7 +389,6 @@ def main():
                 
                 #### 1. Multiplicador Implícito (Fator de Controle):
                 """)
-                # Corrigido: Usando st.latex e escapando as barras invertidas
                 st.latex(f"""
                     \text{{Multiplicador}} = \\frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}}
                 """)
@@ -395,7 +396,6 @@ def main():
                 st.info(f"""
                 #### 2. Margem Bruta (Indicador de Performance):
                 """)
-                # Corrigido: Usando st.latex e escapando as barras invertidas
                 st.latex(f"""
                     \text{{Margem Bruta}} = \\frac{{(\text{{Preço}} - \text{{Custo}})}}{{\text{{Preço}}}} \times 100 = \mathbf{{ {margem:,.1f}\% }}
                 """)
