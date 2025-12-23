@@ -363,8 +363,7 @@ def main():
             custo_produto = product_data['Custo Total de Insumos (R$)']
             preco_venda = product_data['Preço de Venda (Mercado) (R$)']
             
-            # NOVO TRATAMENTO DE TIPAGEM: Forçar para float para o Streamlit engolir
-            # Se a tipagem falhar por algum motivo (embora o backend tenha limpado), ele retorna 0.0
+            # TRATAMENTO DE TIPAGEM: Forçar para float
             try:
                 margem = float(product_data['Margem de Lucro Bruta (%)'])
             except:
@@ -380,13 +379,37 @@ def main():
             col1.metric("Custo Total de Insumos (Seu Custo)", f"R$ {custo_produto:,.2f}")
             col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
             
-            # Análise da cor da Margem
-            margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
-            col3.metric("Margem de Lucro Bruta", f"{margem:,.1f} %", delta_color=margem_color)
+            # --- CÁLCULO DAS MÉTRICAS DE CORES E VALORES ---
             
-            # Análise da cor do Multiplicador (Assumindo que >2 é razoável)
-            multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
-            col4.metric("Multiplicador Implícito", f"x{multiplicador_implicito:,.2f}", delta_color=multiplicador_color)
+            if preco_venda == 0.0 or custo_produto == 0.0:
+                # Se não há preço ou custo, a margem é 0 e a cor não deve aparecer (off)
+                margem_color = 'off' 
+                margem_display_value = f"{margem:,.1f} %"
+                multiplicador_color = 'off'
+                multiplicador_display_value = f"x{multiplicador_implicito:,.2f}"
+            else:
+                # Define a cor com base nos thresholds (40% e 20% para margem)
+                margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
+                margem_display_value = f"{margem:,.1f} %"
+                
+                # Define a cor com base nos thresholds (3.0 e 2.0 para multiplicador)
+                multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
+                multiplicador_display_value = f"x{multiplicador_implicito:,.2f}"
+
+            # CHAMADA CORRIGIDA DO ST.METRIC: Usando delta=None para garantir que a função seja chamada corretamente.
+            col3.metric(
+                label="Margem de Lucro Bruta", 
+                value=margem_display_value, 
+                delta=None, 
+                delta_color=margem_color
+            )
+            
+            col4.metric(
+                label="Multiplicador Implícito", 
+                value=multiplicador_display_value,
+                delta=None, 
+                delta_color=multiplicador_color
+            )
             
             st.markdown("---")
             st.markdown(f"#### Detalhamento da Margem de Lucro e Multiplicador")
@@ -399,7 +422,6 @@ def main():
                 
                 #### 1. Multiplicador Implícito (Fator de Controle):
                 """)
-                # Note: LaTeX para matemática formal/complexa
                 st.latex(f"""
                     \text{{Multiplicador}} = \\frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}}
                 """)
