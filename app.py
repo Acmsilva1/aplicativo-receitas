@@ -123,15 +123,19 @@ def get_all_calculated_data():
     df_bases = load_data_from_gsheets('receitas_bases')
     df_finais = load_data_from_gsheets('receitas_finais')
     
-    # 2. Carregar a Tabela de Preços de Mercado
-    # O código assume que a coluna com o preço está nomeada incorretamente (como CUSTO_FIXO_OPERACIONAL)
-    # na tabela que o usuário enviou (tabela_precos_mercado.csv), então faremos o mapeamento
-    # correto para a coluna PRECO_VENDA_FINAL (R$)
+    # 2. Carregar a Tabela de Preços de Mercado (FIXADO CONTRA ERRO DE COLUNA)
     df_precos_mercado_bruto = load_data_from_gsheets('tabela_precos_mercado')
     
-    # Renomeia e sanitiza a coluna que contem o preço de venda (assumindo a coluna 3 é o preço)
-    df_precos_mercado_bruto.columns = ['PRODUTO', 'COLUNA_MULTIPLICADOR_ANTIGO', 'PRECO_VENDA_FINAL']
-    df_precos_mercado = df_precos_mercado_bruto[['PRODUTO', 'PRECO_VENDA_FINAL']].copy()
+    # GARANTIA DE QUE AS COLUNAS 1 E 3 SERÃO USADAS (Coluna 0 e Coluna 2 no índice):
+    if len(df_precos_mercado_bruto.columns) < 3:
+        st.error("A tabela 'tabela_precos_mercado' deve ter pelo menos 3 colunas, sendo a 1ª o Produto e a 3ª o Preço de Venda.")
+        st.stop()
+        
+    # Força os nomes das colunas de interesse. A 1ª coluna será 'PRODUTO_KEY' e a 3ª 'PRECO_VENDA_FINAL'
+    df_precos_mercado_bruto.columns = ['PRODUTO_KEY', 'IGNORAR_1', 'PRECO_VENDA_FINAL'] + list(df_precos_mercado_bruto.columns)[3:]
+    
+    df_precos_mercado = df_precos_mercado_bruto[['PRODUTO_KEY', 'PRECO_VENDA_FINAL']].copy()
+    df_precos_mercado.rename(columns={'PRODUTO_KEY': 'PRODUTO'}, inplace=True)
     df_precos_mercado = sanitize_and_convert(df_precos_mercado, 'PRECO_VENDA_FINAL')
     
     # 3. Calcular Custos (Lógica Antiga)
@@ -290,7 +294,18 @@ def main():
             all_products = df_precificacao_completa['Produto'].tolist()
             
         except Exception as e:
-            st.error(f"Não foi possível carregar ou calcular os dados. Verifique se a planilha 'tabela_precos_mercado' existe e está com os dados no formato correto (Coluna 1: PRODUTO, Coluna 3: PREÇO DE VENDA em R$). Erro: {e}")
+            st.error(f"Não foi possível carregar ou calcular os dados. Verifique o checklist abaixo. Erro: {e}")
+            
+            # Checklist para ajudar a debuggar o Google Sheets
+            st.markdown("---")
+            st.subheader("Checklist de Conexão com o Google Sheets")
+            st.error("""
+            1. **Aba `tabela_precos_mercado` Existe?** O nome está EXATAMENTE assim, sem espaços extras?
+            2. **Coluna 1 (Produto):** Contém os nomes dos bolos/bases (ex: BOLO_VULCAO_CHOCOLATUDO)?
+            3. **Coluna 3 (Preço):** Contém os preços de venda (ex: 40.00)? (A 2ª coluna é ignorada.)
+            4. **Permissão:** O e-mail da Service Account (GCP_SA_CLIENT_EMAIL) tem permissão de LEITURA na planilha?
+            """)
+            
             return
             
     st.success("Cálculos concluídos! Deslize para baixo ou comece sua consulta.")
@@ -309,7 +324,7 @@ def main():
         
         st.subheader("Visão Geral de Margem de Lucro Bruta e Multiplicador")
         
-        # Inclusão da nova métrica na tabela resumo
+        # Tabela resumo com todas as métricas
         df_display_summary = df_precificacao_completa[['Produto', 'Tipo', 'Custo Total de Insumos (R$)', 'Preço de Venda (Mercado) (R$)', 'Multiplicador Implícito', 'Margem de Lucro Bruta (%)']]
         df_display_summary.columns = ['Produto', 'Tipo', 'Custo Insumos (R$)', 'Preço de Venda (R$)', 'Multiplicador Implícito', 'Margem Bruta (%)']
         
@@ -353,6 +368,7 @@ def main():
                 
                 #### 1. Multiplicador Implícito (Fator de Controle):
                 """)
+                # Correção para usar st.latex e escapar as barras invertidas
                 st.latex(f"""
                     \text{{Multiplicador}} = \\frac{{\text{{R\$ {preco_venda:,.2f}}}}}{{\text{{R\$ {custo_produto:,.2f}}}}} = \mathbf{{x{multiplicador_implicito:,.2f}}}
                 """)
@@ -360,6 +376,7 @@ def main():
                 st.info(f"""
                 #### 2. Margem Bruta (Indicador de Performance):
                 """)
+                # Correção para usar st.latex e escapar as barras invertidas
                 st.latex(f"""
                     \text{{Margem Bruta}} = \\frac{{(\text{{Preço}} - \text{{Custo}})}}{{\text{{Preço}}}} \times 100 = \mathbf{{ {margem:,.1f}\% }}
                 """)
