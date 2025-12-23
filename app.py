@@ -123,14 +123,12 @@ def get_all_calculated_data():
     df_bases = load_data_from_gsheets('receitas_bases')
     df_finais = load_data_from_gsheets('receitas_finais')
     
-    # 2. Carregar a Tabela de Preços de Mercado (LÓGICA DE 2 COLUNAS)
+    # 2. Carregar a Tabela de Preços de Mercado
     df_precos_mercado_bruto = load_data_from_gsheets('tabela_precos_mercado')
     
     COL_PRODUTO_KEY = 'PRODUTO'
     
     if COL_PRODUTO_KEY not in df_precos_mercado_bruto.columns:
-        # Se o nome da coluna não for PRODUTO (tudo maiúsculo), pode ser 'Produto', vamos tentar padronizar para o merge.
-        # Mas se o erro persistir, o problema está na 1ª coluna da planilha.
         st.error(f"Coluna principal '{COL_PRODUTO_KEY}' não encontrada na aba 'tabela_precos_mercado'. Nomes das colunas carregadas: {df_precos_mercado_bruto.columns.tolist()}. Verifique se a 1ª coluna se chama 'PRODUTO' e não tem caracteres ocultos.")
         st.stop()
         
@@ -149,7 +147,7 @@ def get_all_calculated_data():
     df_precos_mercado.rename(columns={COL_PRECO_KEY: 'PRECO_VENDA_FINAL', COL_PRODUTO_KEY: 'PRODUTO'}, inplace=True)
     df_precos_mercado = sanitize_and_convert(df_precos_mercado, 'PRECO_VENDA_FINAL')
     
-    # 3. Calcular Custos (Lógica Antiga)
+    # 3. Calcular Custos
     custo_ingredientes_dict, unidade_ingredientes_dict = calculate_master_ingredient_cost(df_ingredientes)
     custo_bases_dict, df_bases_detalhe = calculate_recipe_cost(df_bases, custo_ingredientes_dict, receita_col_name='NOME_BASE')
     
@@ -203,15 +201,24 @@ def get_all_calculated_data():
         df_precificacao_completa['Preço de Venda (Mercado) (R$)']
     ) * 100
     
-    df_precificacao_completa['Margem de Lucro Bruta (%)'] = df_precificacao_completa['Margem de Lucro Bruta (%)'].round(1).fillna(0) # Arredonda e zera NaN
-    
-    # 6b. Multiplicador Implícito (NOVO CÁLCULO)
+    # 6b. Multiplicador Implícito
     # Multiplicador = Preço / Custo
     df_precificacao_completa['Multiplicador Implícito'] = (
         df_precificacao_completa['Preço de Venda (Mercado) (R$)'] / 
         df_precificacao_completa['Custo Total de Insumos (R$)']
     )
-    df_precificacao_completa['Multiplicador Implícito'] = df_precificacao_completa['Multiplicador Implícito'].round(2).fillna(0)
+    
+    # NOVO E AGRESSIVO TRATAMENTO DE ERROS DE CÁLCULO (Infinito, NaN)
+    # Garante que as colunas de métricas sejam sempre números válidos antes do Streamlit
+    
+    for col in ['Margem de Lucro Bruta (%)', 'Multiplicador Implícito']:
+        # Substitui Infinito e -Infinito por NaN (resultado de divisão por zero)
+        df_precificacao_completa[col] = df_precificacao_completa[col].replace([np.inf, -np.inf], np.nan)
+        # Preenche os NaN resultantes (e os originais) com 0.0
+        df_precificacao_completa[col] = df_precificacao_completa[col].fillna(0.0)
+
+    df_precificacao_completa['Margem de Lucro Bruta (%)'] = df_precificacao_completa['Margem de Lucro Bruta (%)'].round(1) 
+    df_precificacao_completa['Multiplicador Implícito'] = df_precificacao_completa['Multiplicador Implícito'].round(2)
 
     # Ordenação final
     df_precificacao_completa = df_precificacao_completa.sort_values(by='Preço de Venda (Mercado) (R$)', ascending=False)
@@ -359,10 +366,11 @@ def main():
             margem = product_data['Margem de Lucro Bruta (%)']
             multiplicador_implicito = product_data['Multiplicador Implícito']
             
-            # NOVO TRATAMENTO CONTRA NaN/None (Para garantir que a lógica de cor não falhe)
-            if pd.isna(margem):
+            # Não precisamos mais do tratamento de pd.isna() no frontend, pois ele foi movido para o backend
+            # O Streamlit ainda precisa de um float para fazer as comparações corretamente:
+            if not isinstance(margem, (float, int)):
                 margem = 0.0
-            if pd.isna(multiplicador_implicito):
+            if not isinstance(multiplicador_implicito, (float, int)):
                 multiplicador_implicito = 0.0
 
             # Quatro colunas para as métricas principais
