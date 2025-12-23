@@ -4,23 +4,23 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
 import os
-from dotenv import load_dotenv
+# from dotenv import load_dotenv # Não é mais necessário para o Cloud, mas mantemos a dependência no requirements.txt
 
 # --- Configurações Iniciais ---
-load_dotenv() # Carrega variáveis do .env (localmente)
+# load_dotenv() # Comentado para ambiente Streamlit Cloud
 
-# Variáveis do Google Sheets
+# Variáveis do Google Sheets (Vem das Secrets)
 SHEET_ID = os.getenv("SHEET_ID")
-# A chave privada deve ter as novas linhas preservadas (usamos replace no código)
 PRIVATE_KEY = os.getenv("GCP_SA_PRIVATE_KEY", "").replace("\\n", "\n")
+CLIENT_EMAIL = os.getenv("GCP_SA_CLIENT_EMAIL")
 
 # --- Funções de Conexão e Caching ---
 
 @st.cache_resource
 def get_service_account_credentials():
     """Constrói o JSON de credenciais a partir das variáveis de ambiente."""
-    if not all([os.getenv("GCP_SA_CLIENT_EMAIL"), PRIVATE_KEY]):
-        st.error("Erro de configuração: Credenciais do Google Cloud não encontradas. Configure as secrets no Streamlit Cloud ou o arquivo .env localmente.")
+    if not all([CLIENT_EMAIL, PRIVATE_KEY]):
+        st.error("Erro de configuração: Credenciais do Google Cloud não encontradas. Configure as secrets no Streamlit Cloud.")
         st.stop()
         
     creds_info = {
@@ -28,7 +28,7 @@ def get_service_account_credentials():
         "project_id": os.getenv("GCP_SA_PROJECT_ID"),
         "private_key_id": os.getenv("GCP_SA_PRIVATE_KEY_ID"),
         "private_key": PRIVATE_KEY,
-        "client_email": os.getenv("GCP_SA_CLIENT_EMAIL"),
+        "client_email": CLIENT_EMAIL,
         "client_id": os.getenv("GCP_SA_CLIENT_ID"),
         "auth_uri": os.getenv("GCP_SA_AUTH_URI"),
         "token_uri": os.getenv("GCP_SA_TOKEN_URI"),
@@ -37,17 +37,11 @@ def get_service_account_credentials():
         "universe_domain": os.getenv("GCP_SA_UNIVERSE_DOMAIN")
     }
     
-    # Validação de credenciais (para não gerar malwares de erro, só um erro limpo)
-    if not creds_info.get("private_key"):
-        raise ValueError("Chave privada não carregada corretamente.")
-
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    
-    # O Gspread prefere o método from_json_keyfile_dict
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
     return creds
 
-@st.cache_data(ttl=600) # Cache de 10 minutos para não estourar o limite de leitura da API
+@st.cache_data(ttl=600) # Cache de 10 minutos
 def load_data_from_gsheets(sheet_name):
     """Conecta ao Google Sheets e carrega os dados de uma aba específica."""
     try:
@@ -59,27 +53,23 @@ def load_data_from_gsheets(sheet_name):
         data = worksheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # Converte nomes das colunas para maiúsculas e remove espaços para padronização
         df.columns = [col.upper().strip() for col in df.columns]
         
         return df
     
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.error(f"Planilha com ID '{SHEET_ID}' não encontrada.")
-        st.stop()
-    except gspread.exceptions.WorksheetNotFound:
-        st.error(f"Aba '{sheet_name}' não encontrada na planilha.")
-        st.stop()
     except Exception as e:
         st.error(f"Erro ao carregar dados da aba {sheet_name}: {e}")
         st.stop()
-        
+
 # --- Funções de Processamento de Dados (Seu motor de IA/Dados) ---
 
 def sanitize_and_convert(df, column_name):
     """Limpa e converte colunas de valores para float."""
+    # Aprimoramento: tratar possíveis colunas inexistentes ou vazias
+    if column_name not in df.columns:
+        return df 
+        
     df[column_name] = df[column_name].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip()
-    # Tenta converter, se falhar, preenche com 0 e avisa (gov. de dados: não quebrar)
     df[column_name] = pd.to_numeric(df[column_name], errors='coerce').fillna(0.0)
     return df
 
@@ -87,173 +77,206 @@ def calculate_master_ingredient_cost(df_ingredientes):
     """Calcula o custo unitário (por G, ML ou UN) de cada ingrediente mestre."""
     
     df = df_ingredientes.copy()
-    
-    # Limpeza e conversão de valores
     df = sanitize_and_convert(df, 'VALOR_PACOTE')
     
-    # Conversão de unidades para custo por unidade base (g, ml, ou un)
-    # Exemplo: Se o pacote tem 5000G e custa 15.50, o custo/G é 15.50 / 5000
+    # Previne divisão por zero (Governança de Dados)
+    df['QUANT_PACOTE'] = df['QUANT_PACOTE'].replace(0, 1)
+    
     df['CUSTO_UNITARIO'] = df['VALOR_PACOTE'] / df['QUANT_PACOTE']
     
-    # Renomeia para clareza e cria um dicionário de busca rápida
     df = df[['NOME_ITEM', 'UNIDADE_PACOTE', 'CUSTO_UNITARIO']]
     df.columns = ['NOME_INGREDIENTE', 'UNIDADE_BASE', 'CUSTO_UNITARIO']
     
-    # Tratamento de UNIDADES (UN) para manter CUSTO_UNITARIO como R$/UN
-    df['CUSTO_UNITARIO'] = df.apply(
-        lambda row: row['CUSTO_UNITARIO'] if row['UNIDADE_BASE'] == 'UN' else row['CUSTO_UNITARIO'], 
-        axis=1
-    )
-    
-    # Cria o dicionário de custo (chave: NOME_INGREDIENTE)
     custo_dict = df.set_index('NOME_INGREDIENTE')['CUSTO_UNITARIO'].to_dict()
     unidade_dict = df.set_index('NOME_INGREDIENTE')['UNIDADE_BASE'].to_dict()
     
     return custo_dict, unidade_dict
 
 def calculate_recipe_cost(df_receitas, custo_dict, receita_col_name='NOME_BASE'):
-    """Calcula o custo total de uma base ou receita final."""
+    """Calcula o custo total de uma base ou receita final, e retorna o detalhe."""
     
     df = df_receitas.copy()
     
-    # Assegura que QUANT_RECEITA é numérica (governança de dados: não confie no input)
+    # Assegura que QUANT_RECEITA é numérica
     df['QUANT_RECEITA'] = pd.to_numeric(df['QUANT_RECEITA'], errors='coerce').fillna(0)
 
     # Função para calcular o custo do ingrediente na receita
     def calc_ingrediente_custo(row):
         nome_ingrediente = row['NOME_INGREDIENTE']
         quantidade_receita = row['QUANT_RECEITA']
-        
         custo_unitario = custo_dict.get(nome_ingrediente)
         
+        # Se não houver custo unitário, o item é desconhecido, custo = 0
         if custo_unitario is None:
-            # Analogia: É como tentar fazer um bolo sem farinha. Vai dar ruim.
-            return 0.0 # Ingrediente mestre não encontrado
+            return 0.0
         
         return custo_unitario * quantidade_receita
 
     # Calcula o custo de cada linha (ingrediente na receita)
-    df['CUSTO_INGREDIENTE'] = df.apply(calc_ingrediente_custo, axis=1)
+    df['CUSTO_UNITARIO'] = df['NOME_INGREDIENTE'].apply(lambda x: custo_dict.get(x, 0.0))
+    df['CUSTO_ITEM'] = df.apply(calc_ingrediente_custo, axis=1)
 
     # Soma o custo por receita
-    custo_total_receita = df.groupby(receita_col_name)['CUSTO_INGREDIENTE'].sum().reset_index()
-    custo_total_receita.columns = [receita_col_name, 'CUSTO_TOTAL']
+    custo_total_receita_dict = df.groupby(receita_col_name)['CUSTO_ITEM'].sum().to_dict()
+    
+    return custo_total_receita_dict, df # Retorna o dicionário de custo e o DF de detalhe
 
-    return custo_total_receita.set_index(receita_col_name)['CUSTO_TOTAL'].to_dict()
-
-def compile_final_pricing(df_receitas_bases, df_receitas_finais, custo_ingredientes_dict, unidade_ingredientes_dict):
-    """
-    Função principal de precificação: calcula o custo das bases, depois o custo final dos produtos,
-    incluindo bases e itens diretos.
-    """
+@st.cache_data(ttl=600)
+def get_all_calculated_data():
+    """Carrega todos os dados, calcula os custos intermediários e finais."""
     
-    # 1. Calcular Custo das Receitas Base
-    custo_bases_dict = calculate_recipe_cost(df_receitas_bases, custo_ingredientes_dict, receita_col_name='NOME_BASE')
+    # 1. Carregar Dados
+    df_ingredientes = load_data_from_gsheets('ingredientes_mestres')
+    df_bases = load_data_from_gsheets('receitas_bases')
+    df_finais = load_data_from_gsheets('receitas_finais')
     
-    # Adicionar rendimento (se for o caso) - No seu arquivo, a coluna 'RENDIMENTO_FINAL_UNIDADES' está na 'receitas_bases'
-    # Vamos criar um dicionário de rendimento para bases que rendem mais de 1 (ex: mini-vulção)
-    rendimento_bases = df_receitas_bases[['NOME_BASE', 'RENDIMENTO_FINAL_UNIDADES']].drop_duplicates().set_index('NOME_BASE')['RENDIMENTO_FINAL_UNIDADES'].to_dict()
+    # 2. Calcular Custo Mestre (Ingredientes Primos)
+    custo_ingredientes_dict, unidade_ingredientes_dict = calculate_master_ingredient_cost(df_ingredientes)
     
-    # Ajustar custo da base pelo rendimento
+    # 3. Calcular Custo das Receitas Base
+    custo_bases_dict, df_bases_detalhe = calculate_recipe_cost(df_bases, custo_ingredientes_dict, receita_col_name='NOME_BASE')
+    
+    # 4. Ajustar custo da base pelo rendimento
+    df_rendimento = df_bases[['NOME_BASE', 'RENDIMENTO_FINAL_UNIDADES']].drop_duplicates()
+    df_rendimento['RENDIMENTO_FINAL_UNIDADES'] = pd.to_numeric(df_rendimento['RENDIMENTO_FINAL_UNIDADES'], errors='coerce').fillna(1)
+    rendimento_bases = df_rendimento.set_index('NOME_BASE')['RENDIMENTO_FINAL_UNIDADES'].to_dict()
+    
+    custo_bases_ajustado_dict = {}
     for base, custo in custo_bases_dict.items():
         rendimento = rendimento_bases.get(base, 1)
-        custo_bases_dict[base] = custo / rendimento # Custo por "unidade" de base produzida
+        custo_bases_ajustado_dict[base] = custo / rendimento # Custo por "unidade" de base produzida
 
-    # 2. Compilar Custo Total (Ingredientes Mestres + Bases)
-    # Combina os dicionários de custo para a próxima etapa de cálculo
-    custo_total_dict = {**custo_ingredientes_dict, **custo_bases_dict}
+    # 5. Compilar Custo Total (Ingredientes Mestres + Bases Ajustadas)
+    custo_total_dict = {**custo_ingredientes_dict, **custo_bases_ajustado_dict}
     
-    # 3. Calcular Custo das Receitas Finais
-    df_finais = df_receitas_finais.copy()
+    # 6. Calcular Custo das Receitas Finais
+    custo_finais_dict, df_finais_detalhe = calculate_recipe_cost(df_finais, custo_total_dict, receita_col_name='NOME_BOLO')
     
-    # Assegura que QUANT_RECEITA é numérica
-    df_finais['QUANT_RECEITA'] = pd.to_numeric(df_finais['QUANT_RECEITA'], errors='coerce').fillna(0)
+    # 7. Compilar o DataFrame Final
+    df_precificacao_final = pd.DataFrame(custo_finais_dict.items(), columns=['Produto', 'Custo Total de Insumos (R$)'])
+    df_precificacao_final['Custo Total de Insumos (R$)'] = df_precificacao_final['Custo Total de Insumos (R$)'].round(2)
+    df_precificacao_final = df_precificacao_final.sort_values(by='Custo Total de Insumos (R$)', ascending=False)
     
-    def calc_item_custo_final(row):
-        nome_item = row['NOME_INGREDIENTE']
-        quantidade = row['QUANT_RECEITA']
+    # Retorna todos os dados para o frontend
+    return df_precificacao_final, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict
+
+# --- Streamlit App (Frontend) ---
+
+def display_recipe_detail(selected_product, df_finais_detalhe, custo_total_dict, df_bases_detalhe, unidade_ingredientes_dict):
+    """Mostra o detalhe completo da receita e custo do produto final."""
+    
+    st.subheader(f"Detalhe da Composição e Custo de Insumos: {selected_product}")
+    
+    # 1. Detalhe do Produto Final (NOME_BOLO)
+    df_bolo = df_finais_detalhe[df_finais_detalhe['NOME_BOLO'] == selected_product].copy()
+    
+    # Prepara o DF para visualização
+    df_bolo['Tipo de Item'] = df_bolo['NOME_INGREDIENTE'].apply(
+        lambda x: 'Base' if x in custo_total_dict and x not in unidade_ingredientes_dict else 'Ingrediente Mestre/Final'
+    )
+    df_bolo['Custo Total (R$)'] = df_bolo['CUSTO_ITEM'].round(4)
+    df_bolo['Custo Unitário'] = df_bolo['CUSTO_UNITARIO'].round(4)
+    
+    df_display = df_bolo[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Tipo de Item', 'CUSTO_UNITARIO', 'Custo Total (R$)']]
+    df_display.columns = ['Item/Base Usada', 'Qtd na Receita', 'Tipo', 'Custo/Unidade Base (R$)', 'Custo Total do Item (R$)']
+    
+    st.dataframe(df_display, hide_index=True, use_container_width=True)
+    
+    total_custo = df_display['Custo Total do Item (R$)'].sum()
+    st.metric("Custo Total do Produto (Insumos)", f"R$ {total_custo:,.2f}")
+    
+    # 2. Detalhe das Bases (Se houver)
+    bases_usadas = df_bolo[df_bolo['Tipo de Item'] == 'Base']['NOME_INGREDIENTE'].unique()
+    
+    if bases_usadas.size > 0:
+        st.markdown("---")
+        st.info("💡 **Análise de Dados:** Os itens listados como 'Base' possuem um detalhamento de custo próprio, composto por ingredientes mestres.")
         
-        custo_unitario = custo_total_dict.get(nome_item)
-        
-        if custo_unitario is None:
-            # Sarcasmo: O cliente inventou um ingrediente que nem o Google conhece.
-            return 0.0
-        
-        return custo_unitario * quantidade
+        for base in bases_usadas:
+            st.markdown(f"#### Composição da Base: {base}")
+            
+            df_base = df_bases_detalhe[df_bases_detalhe['NOME_BASE'] == base].copy()
+            
+            # Recupera o rendimento da base (se existir) para contextualizar o custo unitário
+            rendimento = rendimento_bases.get(base, 1)
+            custo_base_ajustado = custo_total_dict.get(base, 0)
+            
+            st.caption(f"Custo total da produção da Base {base}: R$ {df_base['CUSTO_ITEM'].sum():,.2f}. Rendimento: {rendimento} Unidades.")
+            st.caption(f"Custo Ajustado por UNIDADE de Base usada no produto final: R$ {custo_base_ajustado:,.4f}.")
+            
+            df_base['Custo Total (R$)'] = df_base['CUSTO_ITEM'].round(4)
+            df_base['Custo/Unidade Mestre (R$)'] = df_base['CUSTO_UNITARIO'].round(4)
 
-    df_finais['CUSTO_ITEM'] = df_finais.apply(calc_item_custo_final, axis=1)
-
-    # Soma o custo por bolo final
-    custo_final = df_finais.groupby('NOME_BOLO')['CUSTO_ITEM'].sum().reset_index()
-    custo_final.columns = ['Produto', 'Custo Total de Insumos (R$)']
-    
-    # Formatação para R$
-    custo_final['Custo Total de Insumos (R$)'] = custo_final['Custo Total de Insumos (R$)'].round(2)
-    
-    return custo_final.sort_values(by='Custo Total de Insumos (R$)', ascending=False)
-
-
-# --- Streamlit App ---
+            df_base_display = df_base[['NOME_INGREDIENTE', 'QUANT_RECEITA', 'Custo/Unidade Mestre (R$)', 'Custo Total (R$)']]
+            df_base_display.columns = ['Ingrediente Mestre', 'Qtd na Receita (G/ML/UN)', 'Custo/Unidade (R$)', 'Custo Total na Base (R$)']
+            
+            st.dataframe(df_base_display, hide_index=True, use_container_width=True)
 
 def main():
     st.set_page_config(page_title="Caderno de Receitas e Precificação 🍰", layout="wide")
-    st.title("💰 Precificação Mágica dos Seus Bolos (Impulsionado por Dados)")
-    st.markdown("""
-        Bem-vindo ao seu painel de custo. Aqui, a mágica da precificação acontece: 
-        calculamos o custo exato de cada ingrediente, somamos tudo e voilà!
-        Chega de adivinhar o preço do bolo.
-    """)
+    st.title("Caderno de Receitas e Precificação de Bolos")
     
-    # 1. Carregar Dados
-    with st.spinner('Buscando ingredientes na despensa virtual do Google Sheets...'):
-        df_ingredientes = load_data_from_gsheets('ingredientes_mestres')
-        df_bases = load_data_from_gsheets('receitas_bases')
-        df_finais = load_data_from_gsheets('receitas_finais')
+    # --- 1. Carregar Dados ---
+    with st.spinner('Ligando a IA da Precificação e buscando os dados no Sheets...'):
+        try:
+            df_precificacao_final, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict = get_all_calculated_data()
+            all_products = df_precificacao_final['Produto'].tolist()
+            
+        except Exception as e:
+            st.error(f"Não foi possível carregar ou calcular os dados. Verifique a planilha ou as Secrets. Erro: {e}")
+            return
+            
+    st.success("Cálculos concluídos! Deslize para baixo ou comece sua consulta.")
+    st.markdown("---")
     
-    st.success("Dados da planilha carregados e prontos para a mágica do cálculo!")
+    # --- 2. Interface de Consulta ---
+    st.header("Consulta de Receitas e Custos")
     
-    # 2. Calcular Custos
-    custo_ingredientes_dict, unidade_ingredientes_dict = calculate_master_ingredient_cost(df_ingredientes)
-    df_precificacao_final = compile_final_pricing(df_bases, df_finais, custo_ingredientes_dict, unidade_ingredientes_dict)
+    # Dropdown para consulta manual (Atende ao requisito)
+    selected_product = st.selectbox(
+        "Selecione o Bolo/Produto Final para Análise Detalhada:",
+        options=["Selecione um Produto..."] + all_products
+    )
     
-    # --- Apresentação dos Resultados ---
-    
-    st.header("Análise de Custo Final dos Produtos")
-    st.dataframe(df_precificacao_final, hide_index=True, use_container_width=True)
-    
-    st.subheader("Bolo Mais Caro x Bolo Mais Barato")
-    
-    mais_caro = df_precificacao_final.iloc[0]
-    mais_barato = df_precificacao_final.iloc[-1]
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.info(f"🍰 **O Mais Luxuoso:** {mais_caro['Produto']}")
-        st.metric("Custo Total de Insumos", f"R$ {mais_caro['Custo Total de Insumos (R$)']:,.2f}")
-        st.markdown(f"> **Teoria na Prática:** Este bolo é seu carro-chefe, o 'iFood Platinum'. Seus ingredientes (como *COBERTURA_BRIGADEIRO* e *CHOCOLATE_NOBRE*) são os que mais pesam na balança financeira, indicando que você deve caprichar na margem de lucro aqui!")
+    if selected_product == "Selecione um Produto...":
+        st.info("Selecione um produto no menu suspenso acima para ver o custo, a receita e o detalhamento de cada ingrediente e base.")
         
-    with col2:
-        st.success(f"🌾 **O Mais Econômico:** {mais_barato['Produto']}")
-        st.metric("Custo Total de Insumos", f"R$ {mais_barato['Custo Total de Insumos (R$)']:,.2f}")
-        st.markdown(f"> **Analogia:** Este é o seu 'Bolo Básico de Todo Dia', o *fast-food* do mundo das confeitarias. Geralmente usa bases e ingredientes mais simples (*TRIGO*, *ACUCAR*, *FERMENTO*), permitindo maior volume de vendas e talvez promoções.")
+        # Atende ao requisito de ver 'todos' os bolos (opcional)
+        st.subheader("Visão Geral de Custo de Todos os Produtos")
+        st.dataframe(df_precificacao_final, hide_index=True, use_container_width=True)
+        return
+        
+    # Encontrou um produto
+    else:
+        # Usa abas para organizar a informação (Melhorando a UX)
+        tab1, tab2 = st.tabs(["💰 Precificação (Custo Resumido)", "📋 Detalhe da Receita (Engenharia de Insumos)"])
+        
+        # --- TAB 1: CUSTO RESUMIDO ---
+        with tab1:
+            custo_produto = df_precificacao_final[df_precificacao_final['Produto'] == selected_product]['Custo Total de Insumos (R$)'].iloc[0]
+            st.metric(f"Custo Total de Insumos para {selected_product}", f"R$ {custo_produto:,.2f}")
+            
+            # Espaço para o próximo aprimoramento (Margem de Lucro)
+            st.markdown("""
+            > **Próxima Etapa:** O custo de insumos é R$ **{custo_produto:,.2f}**. 
+            Para chegar ao Preço de Venda ideal, aplique sua **Margem de Lucro**, 
+            cubra seus custos fixos (aluguel, luz) e variáveis (gás, mão de obra).
+            """)
+            
+        # --- TAB 2: DETALHE DA RECEITA ---
+        with tab2:
+            display_recipe_detail(selected_product, df_finais_detalhe, custo_total_dict, df_bases_detalhe, unidade_ingredientes_dict)
 
-    # --- Expansão (Detalhe do Custo Unitário) ---
-    
-    st.header("Detalhe: Custo Unitário dos Ingredientes Mestres")
-    
-    # Cria um DF limpo para exibição
-    df_custo_unitario = pd.DataFrame(custo_ingredientes_dict.items(), columns=['NOME_INGREDIENTE', 'CUSTO_UNITARIO'])
-    df_custo_unitario['UNIDADE_BASE'] = df_custo_unitario['NOME_INGREDIENTE'].map(unidade_ingredientes_dict)
-    
-    df_custo_unitario['CUSTO_UNITARIO'] = df_custo_unitario['CUSTO_UNITARIO'].apply(lambda x: f"R$ {x:,.4f}")
-    
-    st.dataframe(df_custo_unitario, hide_index=True)
-    st.caption("Custo por grama (G), mililitro (ML) ou unidade (UN). Valores como R$ 0,0000 indicam custo por G/ML, que é bem pequeno, mas crucial!")
-    
 if __name__ == '__main__':
+    # Esta parte é importante para garantir que a variável rendimento_bases seja globalmente acessível
+    # para a função display_recipe_detail, mesmo que ela venha da função cacheada
     try:
+        # Tenta carregar os dados de bases novamente, se necessário
+        df_bases = load_data_from_gsheets('receitas_bases')
+        df_rendimento = df_bases[['NOME_BASE', 'RENDIMENTO_FINAL_UNIDADES']].drop_duplicates()
+        df_rendimento['RENDIMENTO_FINAL_UNIDADES'] = pd.to_numeric(df_rendimento['RENDIMENTO_FINAL_UNIDADES'], errors='coerce').fillna(1)
+        rendimento_bases = df_rendimento.set_index('NOME_BASE')['RENDIMENTO_FINAL_UNIDADES'].to_dict()
+        
         main()
     except Exception as e:
-        # Aqui, capturamos exceções não tratadas (governança de código)
-        st.error(f"Opa, algo deu muito errado no sistema. Ligue o modo TI! Detalhe: {e}")
+        st.error(f"Erro Crítico na inicialização do app: {e}")
