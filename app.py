@@ -350,27 +350,33 @@ def main():
         
         # --- TAB 1: CUSTO E PREÇO FINAL ---
         with tab1:
-            product_data = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
-            
-            custo_produto = product_data['Custo Total de Insumos (R$)']
-            preco_venda = product_data['Preço de Venda (Mercado) (R$)']
-            margem = product_data['Margem de Lucro Bruta (%)']
-            multiplicador_implicito = product_data['Multiplicador Implícito']
-            
-            # Quatro colunas para as métricas principais
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Custo Total de Insumos (Seu Custo)", f"R$ {custo_produto:,.2f}")
-            col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
-            
-            # Análise da cor da Margem
-            margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
-            col3.metric("Margem de Lucro Bruta", f"{margem:,.1f} %", delta_color=margem_color)
-            
-            # Análise da cor do Multiplicador (Assumindo que >2 é razoável)
-            multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
-            col4.metric("Multiplicador Implícito", f"x{multiplicador_implicito:,.2f}", delta_color=multiplicador_color)
-            
-            st.markdown("---")
+                product_data = df_precificacao_completa[df_precificacao_completa['PRODUTO'] == selected_product].iloc[0]
+                
+                custo_produto = product_data['Custo Total de Insumos (R$)']
+                preco_venda = product_data['Preço de Venda (Mercado) (R$)']
+                margem = product_data['Margem de Lucro Bruta (%)']
+                multiplicador_implicito = product_data['Multiplicador Implícito']
+                
+                # NOVO TRATAMENTO CONTRA NaN/None
+                if pd.isna(margem):
+                    margem = 0.0
+                if pd.isna(multiplicador_implicito):
+                    multiplicador_implicito = 0.0
+
+                # Quatro colunas para as métricas principais
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Custo Total de Insumos (Seu Custo)", f"R$ {custo_produto:,.2f}")
+                col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
+                
+                # Análise da cor da Margem
+                margem_color = 'green' if margem >= 40 else ('orange' if margem >= 20 else 'red')
+                col3.metric("Margem de Lucro Bruta", f"{margem:,.1f} %", delta_color=margem_color)
+                
+                # Análise da cor do Multiplicador (Assumindo que >2 é razoável)
+                multiplicador_color = 'green' if multiplicador_implicito >= 3.0 else ('orange' if multiplicador_implicito >= 2.0 else 'red')
+                col4.metric("Multiplicador Implícito", f"x{multiplicador_implicito:,.2f}", delta_color=multiplicador_color)
+                
+                st.markdown("---")
             st.markdown(f"#### Detalhamento da Margem de Lucro e Multiplicador")
             
             if preco_venda == 0.0:
