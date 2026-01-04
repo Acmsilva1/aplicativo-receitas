@@ -8,11 +8,16 @@ import numpy as np
 
 # --- Configurações Iniciais ---
 
+# Variáveis de ambiente
 SHEET_ID = os.getenv("SHEET_ID")
 PRIVATE_KEY = os.getenv("GCP_SA_PRIVATE_KEY", "").replace("\\n", "\n")
 CLIENT_EMAIL = os.getenv("GCP_SA_CLIENT_EMAIL")
 
-# --- Funções de Conexão e Caching ---
+# Inicializa o estado de sessão para controlar a atualização manual
+if 'data_loaded' not in st.session_state:
+    st.session_state['data_loaded'] = False
+
+# --- Funções de Conexão e Caching de Recurso ---
 
 @st.cache_resource
 def get_service_account_credentials():
@@ -41,10 +46,13 @@ def get_service_account_credentials():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
     return creds
 
-@st.cache_data(ttl=600)
+# **NOTA:** Removido o TTL! Esta função será executada toda vez que o Streamlit for re-executado.
+# Usamos cache SEM TTL para evitar que ela seja re-executada em interações como mudança de selectbox
+@st.cache_data(show_spinner=False) 
 def load_data_from_gsheets(sheet_name):
     """Conecta ao Google Sheets e carrega os dados de uma aba específica."""
     try:
+        # Pega as credenciais (que estão em cache_resource)
         creds = get_service_account_credentials()
         client = gspread.authorize(creds)
         spreadsheet = client.open_by_key(SHEET_ID)
@@ -69,6 +77,7 @@ def sanitize_and_convert(df, column_name):
     if column_name not in df.columns:
         return df 
         
+    # Versão mais segura e limpa
     df[column_name] = df[column_name].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip()
     df[column_name] = pd.to_numeric(df[column_name], errors='coerce').fillna(0.0)
     return df
@@ -114,11 +123,12 @@ def calculate_recipe_cost(df_receitas, custo_dict, receita_col_name):
     
     return custo_total_receita_dict, df 
 
-@st.cache_data(ttl=600)
+# Função Wrapper para o cálculo completo, SEM CACHE
+# Será executada na abertura da página ou ao clicar no botão
 def get_all_calculated_data():
     """Carrega todos os dados, calcula os custos intermediários e finais, e adiciona o preço de venda de mercado."""
     
-    # 1. Carregar Dados de Receitas
+    # 1. Carregar Dados de Receitas (Busca no Sheets)
     df_ingredientes = load_data_from_gsheets('ingredientes_mestres')
     df_bases = load_data_from_gsheets('receitas_bases')
     df_finais = load_data_from_gsheets('receitas_finais')
@@ -132,7 +142,7 @@ def get_all_calculated_data():
         st.error(f"Coluna principal '{COL_PRODUTO_KEY}' não encontrada na aba 'tabela_precos_mercado'. Nomes das colunas carregadas: {df_precos_mercado_bruto.columns.tolist()}. Verifique se a 1ª coluna se chama 'PRODUTO' e não tem caracteres ocultos.")
         st.stop()
         
-    # Assume que a segunda coluna é o preço de venda (ignora o nome original como CUSTO_FIXO_OPERACIONAL)
+    # Assume que a segunda coluna é o preço de venda
     colunas_disponiveis = df_precos_mercado_bruto.columns.tolist()
     if len(colunas_disponiveis) < 2:
         st.error("A aba 'tabela_precos_mercado' deve ter pelo menos duas colunas (PRODUTO e PREÇO DE VENDA).")
@@ -172,7 +182,7 @@ def get_all_calculated_data():
 
     df_precificacao_completa = pd.concat([df_receitas_finais, df_bases_precificacao], ignore_index=True)
     
-    # FIX CRÍTICO DE CASE SENSITIVITY: Renomear a coluna 'Produto' (P maiúsculo) para 'PRODUTO' (tudo maiúsculo) para o merge funcionar
+    # FIX CRÍTICO DE CASE SENSITIVITY
     df_precificacao_completa.rename(columns={'Produto': 'PRODUTO'}, inplace=True) 
     
     df_precificacao_completa['Custo Total de Insumos (R$)'] = df_precificacao_completa['Custo Total de Insumos (R$)'].round(2)
@@ -191,7 +201,6 @@ def get_all_calculated_data():
     
     # 6. Calcular o Lucro Bruto (R$) e a Margem Percentual
     
-    # Evita divisão por zero (substitui 0 por NaN para não dividir)
     df_precificacao_completa['Custo Total de Insumos (R$)'] = df_precificacao_completa['Custo Total de Insumos (R$)'].replace(0, np.nan) 
     
     # 6a. Lucro Bruto (R$)
@@ -199,24 +208,21 @@ def get_all_calculated_data():
         df_precificacao_completa['Preço de Venda (Mercado) (R$)'] - df_precificacao_completa['Custo Total de Insumos (R$)']
     )
     
-    # 6b. Margem Bruta (%) - Mantida para a tabela e o detalhe final
+    # 6b. Margem Bruta (%) 
     df_precificacao_completa['Margem Bruta (%)'] = (
         df_precificacao_completa['Lucro Bruto (R$)'] / 
         df_precificacao_completa['Preço de Venda (Mercado) (R$)']
     ) * 100
     
     
-    # TRATAMENTO DE ERROS DE CÁLCULO (Infinito, NaN) - GARANTE FLOAT PURO
+    # TRATAMENTO DE ERROS DE CÁLCULO
     for col in ['Lucro Bruto (R$)', 'Margem Bruta (%)']:
-        # Substitui Infinito e -Infinito por NaN 
         df_precificacao_completa[col] = df_precificacao_completa[col].replace([np.inf, -np.inf], np.nan)
-        # Preenche os NaN resultantes (e os originais) com 0.0
         df_precificacao_completa[col] = df_precificacao_completa[col].fillna(0.0)
 
     df_precificacao_completa['Lucro Bruto (R$)'] = df_precificacao_completa['Lucro Bruto (R$)'].round(2) 
     df_precificacao_completa['Margem Bruta (%)'] = df_precificacao_completa['Margem Bruta (%)'].round(1)
 
-    # Ordenação final
     df_precificacao_completa = df_precificacao_completa.sort_values(by='Preço de Venda (Mercado) (R$)', ascending=False)
     
     return df_precificacao_completa, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict, rendimento_bases
@@ -305,9 +311,23 @@ def main():
     st.set_page_config(page_title="Caderno de Receitas e Análise de Margem de Lucro 🍰", layout="wide")
     st.title("Caderno de Receitas e Análise de Margem de Lucro")
     
+    # --- Coluna para o Botão de Atualizar ---
+    col_refresh, col_title = st.columns([1, 4])
+    with col_refresh:
+        # **BOTÃO DE ATUALIZAR**
+        # Quando clicado, ele limpa o cache principal e força uma re-execução do script
+        if st.button("🔄 Atualizar Dados Agora", help="Busca os dados mais recentes do Google Sheets e recalcula todos os custos."):
+            load_data_from_gsheets.clear()
+            st.rerun()
+    
+    col_title.info("A página é atualizada automaticamente ao ser aberta e quando o botão 'Atualizar Dados Agora' é pressionado.")
+    st.markdown("---")
+            
     # --- 1. Carregar Dados ---
+    # Este bloco SEMPRE será executado na abertura (início) ou após um st.rerun
     with st.spinner('Ligando a IA da Precificação e buscando os dados no Sheets...'):
         try:
+            # Chama a função que fará a busca no Sheets (pois o cache foi removido ou não usado)
             df_precificacao_completa, custo_total_dict, df_bases_detalhe, df_finais_detalhe, unidade_ingredientes_dict, rendimento_bases = get_all_calculated_data()
             all_products = df_precificacao_completa['PRODUTO'].tolist()
             
@@ -326,7 +346,7 @@ def main():
             
             return
             
-    st.success("Cálculos concluídos! Deslize para baixo ou comece sua consulta.")
+    st.success("Cálculos concluídos! Utilize o seletor abaixo para a análise detalhada.")
     st.markdown("---")
     
     # --- 2. Interface de Consulta ---
@@ -377,17 +397,14 @@ def main():
             col2.metric("Preço de Venda (Seu Mercado)", f"R$ {preco_venda:,.2f}")
             
             # --- CÁLCULO DO LUCRO BRUTO EM R$ ---
-            
-            # Usando o Lucro Bruto (R$) como delta, o Streamlit automaticamente colore a flecha
-            # (Verde se delta > 0, Vermelho se delta < 0, Cinza se delta = 0)
             col3.metric(
                 label="Lucro Bruto (R$)", 
                 value=f"R$ {lucro_bruto:,.2f}", 
                 delta=lucro_bruto,
-                delta_color='normal' # 'normal' é verde/vermelho padrão
+                delta_color='normal' 
             )
             
-            # --- EXIBIÇÃO DA MARGEM PERCENTUAL (Separado para evitar o erro anterior) ---
+            # --- EXIBIÇÃO DA MARGEM PERCENTUAL ---
             
             margem_color = '' 
             if margem_percentual > 40:
@@ -413,19 +430,25 @@ def main():
                 
                 #### 1. Lucro Bruto (Subtração Simples):
                 """)
+                st.latex(r"""
+                    \text{Lucro Bruto (R\$)} = \text{Preço de Venda} - \text{Custo Total}
+                """)
                 st.latex(f"""
-                    \text{{Lucro Bruto (R\$)}} = \text{{Preço de Venda}} - \text{{Custo Total}} = \text{{R\$ {preco_venda:,.2f}}} - \text{{R\$ {custo_produto:,.2f}}} = \mathbf{{\text{{R\$ {lucro_bruto:,.2f}}}}}
+                    \text{{Lucro Bruto (R\$)}} = \text{{R\$ {preco_venda:,.2f}}} - \text{{R\$ {custo_produto:,.2f}}} = \mathbf{{\text{{R\$ {lucro_bruto:,.2f}}}}}
                 """)
                 
                 st.info(f"""
                 #### 2. Margem Bruta Percentual:
                 """)
+                st.latex(r"""
+                    \text{Margem Bruta (\%)} = \frac{\text{Lucro Bruto}}{\text{Preço de Venda}} \times 100
+                """)
                 st.latex(f"""
-                    \text{{Margem Bruta (\\%)}} = \\frac{{\text{{Lucro Bruto}}}}{{\text{{Preço de Venda}}}} \times 100 = \mathbf{{ {margem_percentual:,.1f}\% }}
+                    \text{{Margem Bruta (\\%)}} = \\frac{{\text{{R\$ {lucro_bruto:,.2f}}}}}{{\text{{R\$ {preco_venda:,.2f}}}}} \times 100 = \mathbf{{ {margem_percentual:,.1f}\% }}
                 """)
                 
                 st.info("""
-                **(Lembrete LGPD: Seus dados estão sendo analisados apenas para fins de cálculo de custo e precificação. O foco no Lucro Bruto (R$) simplifica a interpretação e evita os erros de tipagem do Streamlit que ocorriam com a métrica percentual direta.)**
+                **(Lembrete LGPD: Seus dados estão sendo analisados apenas para fins de cálculo de custo e precificação.)**
                 """)
 
         # --- TAB 2: DETALHE DA RECEITA ---
